@@ -1,0 +1,21 @@
+{
+  "name": "objectiveweb/auth",
+  "description": "Authentication library",
+  "license": "MIT",
+  "authors": [
+    {
+      "name": "Guilherme Barile"
+    }
+  ],
+  "support": {
+    "issues" : "https://github.com/bravado/objectiveweb/issues"
+  },
+  "require": {
+    "objectiveweb/db": "dev-master"
+  },
+  "autoload": {
+    "psr-0": {
+      "Objectiveweb\\": "src"
+    }
+  }
+}
