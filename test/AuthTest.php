@@ -125,4 +125,12 @@ class AuthTest extends PHPUnit_Framework_TestCase
         $this->assertEquals(1, $user['id']);
     }
 
+    public function testRequestToken() {
+        $token = self::$auth->update_token('user');
+
+        self::$auth->passwd_reset($token, 'test');
+
+        self::$auth->login('user', 'test');
+    }
+
 }

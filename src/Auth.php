@@ -16,6 +16,7 @@ class Auth
 
     const LOGIN_QUERY = "select * from `%s` where `%s` = :username";
     const REGISTER_QUERY = "insert into `%s` (%s) values (%s)";
+    const UPDATE_TOKEN = "UPDATE `%s` SET `%s` = %s";
     const UPDATE_LOGIN = 'UPDATE `%s` SET `%s` = NOW() WHERE id = %d';
     const UPDATE_PASSWORD = 'UPDATE `%s` SET `%s` = %s WHERE %s = %s';
     const USER_BY_NAME = "SELECT `%s` FROM `%s` WHERE `%s` = %s";
@@ -23,6 +24,7 @@ class Auth
     public static function hash($password = null)
     {
         if (!$password) {
+            // return a random token
             return md5(microtime(true));
         }
 
@@ -59,7 +61,7 @@ class Auth
     }
 
     /**
-     * @param array $user [ username, displayName, email, password ]
+     * @param array $user [ username, email, password ]
      * @param array $fields array of additional fields to store on the user table
      */
     public function register(array $user, $fields = array())
@@ -191,5 +193,56 @@ class Auth
 
     }
 
+    /**
+     *
+     * Reset a user's password
+     *
+     * @param $token
+     * @param $password new password
+     * @return bool TRUE on success
+     * @throws UserException if no rows were updated
+     */
+    public function passwd_reset($token, $password)
+    {
 
+        $query = sprintf(self::UPDATE_PASSWORD,
+            $this->params['table'],
+            $this->params['password'],
+            $this->pdo->quote(self::hash($password)),
+            $this->params['token'],
+            $this->pdo->quote($token));
+
+
+        $stmt = $this->pdo->query($query);
+
+        if($stmt === FALSE || $stmt->rowCount() !== 1) {
+            throw new UserException('Hash not found');
+        }
+
+        return TRUE;
+
+    }
+
+
+    /**
+     * Generates a new token for the user and update the database
+     * @param $username
+     * @return string new token
+     */
+    public function update_token($username) {
+        $token = self::hash();
+
+        $query = sprintf(self::UPDATE_TOKEN,
+            $this->params['table'],
+            $this->params['token'],
+            $this->pdo->quote($token));
+
+        $stmt = $this->pdo->query($query);
+
+        if($stmt === FALSE || $stmt->rowCount() !== 1) {
+            throw new UserException('User not found');
+        }
+
+        return $token;
+    }
 }
