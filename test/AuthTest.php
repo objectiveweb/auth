@@ -47,7 +47,7 @@ class AuthTest extends PHPUnit_Framework_TestCase
         self::$shared_session = $_SESSION;
     }
 
-    public function testRegister()
+    public function testRegistration()
     {
 
         $user = AuthTest::$auth->register([
@@ -58,6 +58,25 @@ class AuthTest extends PHPUnit_Framework_TestCase
         ]);
 
         $this->assertEquals(1, $user['id']);
+
+        // test Login
+        $user = self::$auth->login('user', 'test');
+
+        $this->assertEquals(1, $user['id'], "Check user ID");
+        $this->assertRegExp('/[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}/',
+            $user['created'],
+            "Check creation date");
+        $this->assertTrue(AuthTest::$auth->check());
+
+        // test Session
+        $user = self::$auth->user();
+
+        $this->assertEquals(1, $user['id']);
+
+        // test Logout
+        self::$auth->logout();
+
+        $this->assertFalse(self::$auth->check());
     }
 
     /**
@@ -78,52 +97,20 @@ class AuthTest extends PHPUnit_Framework_TestCase
 
     }
 
-    public function testValidLogin()
-    {
-        $user = self::$auth->login('user', 'test');
-
-        $this->assertEquals(1, $user['id'], "Check user ID");
-        $this->assertRegExp('/[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}/',
-            $user['created'],
-            "Check creation date");
-        $this->assertTrue(AuthTest::$auth->check());
-
-    }
-
-    public function testSession()
-    {
-        $user = self::$auth->user();
-
-        $this->assertEquals(1, $user['id']);
-    }
-
-    public function testLogout()
-    {
-        self::$auth->logout();
-
-        $this->assertFalse(self::$auth->check());
-    }
 
 
-    /**
-     * @expectedException Objectiveweb\Auth\PasswordMismatchException
-     */
     public function testPasswd()
     {
         $t = self::$auth->passwd('user', "1234");
 
         $this->assertTrue($t);
 
-        self::$auth->login('user', 'test');
-
-    }
-
-    public function testLoginWithNewPassword()
-    {
         $user = self::$auth->login('user', '1234');
 
         $this->assertEquals(1, $user['id']);
+
     }
+
 
     public function testRequestToken() {
         $token = self::$auth->update_token('user');
