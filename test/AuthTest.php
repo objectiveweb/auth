@@ -30,7 +30,7 @@ class AuthTest extends PHPUnit_Framework_TestCase
                 `email` VARCHAR(255),
                 `created` DATETIME,
                 `last_login` DATETIME,
-                `password` VARCHAR(255),
+                `password` VARCHAR(60),
                 `token` VARCHAR(32));');
 
         self::$auth = new Auth($pdo, ['table' => 'ow_auth_test']);
@@ -65,6 +65,15 @@ class AuthTest extends PHPUnit_Framework_TestCase
      */
     public function testInvalidLogin()
     {
+        self::$auth->login('nouser', 'pass');
+
+    }
+
+    /**
+     * @expectedException Objectiveweb\Auth\PasswordMismatchException
+     */
+    public function testInvalidPassword()
+    {
         self::$auth->login('user', 'pass');
 
     }
@@ -97,7 +106,7 @@ class AuthTest extends PHPUnit_Framework_TestCase
 
 
     /**
-     * @expectedException Objectiveweb\Auth\UserException
+     * @expectedException Objectiveweb\Auth\PasswordMismatchException
      */
     public function testPasswd()
     {

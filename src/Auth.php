@@ -14,7 +14,7 @@ class Auth
     /** @var \PDO */
     private $pdo;
 
-    const LOGIN_QUERY = "select * from `%s` where `%s` = :username and `%s` = :password";
+    const LOGIN_QUERY = "select * from `%s` where `%s` = :username";
     const REGISTER_QUERY = "insert into `%s` (%s) values (%s)";
     const UPDATE_LOGIN = 'UPDATE `%s` SET `%s` = NOW() WHERE id = %d';
     const UPDATE_PASSWORD = 'UPDATE `%s` SET `%s` = %s WHERE %s = %s';
@@ -23,10 +23,10 @@ class Auth
     public static function hash($password = null)
     {
         if (!$password) {
-            $password = microtime(true);
+            return md5(microtime(true));
         }
 
-        return md5($password);
+        return password_hash($password, PASSWORD_BCRYPT);
     }
 
     public function __construct(\PDO $pdo, $params = array())
@@ -60,10 +60,10 @@ class Auth
 
     /**
      * @param array $user [ username, displayName, email, password ]
+     * @param array $fields array of additional fields to store on the user table
      */
-    public function register(array $user)
+    public function register(array $user, $fields = array())
     {
-        $fields = [];
 
         foreach (['username', 'displayName', 'email'] as $f) {
             if ($this->params[$f]) {
@@ -77,7 +77,7 @@ class Auth
 
         // TODO test password complexity
         $fields[$this->params['password']] = $this->pdo->quote(self::hash($user['password']));
-        $fields[$this->params['token']] = $this->pdo->quote(self::hash());
+        $fields[$this->params['token']] = $this->pdo->quote(md5(microtime(true)));
         $fields[$this->params['created']] = 'NOW()';
 
         $query = (sprintf(self::REGISTER_QUERY,
@@ -109,24 +109,33 @@ class Auth
 
         $query = sprintf(self::LOGIN_QUERY,
             $this->params['table'],
-            $this->params['username'],
-            $this->params['password']);
+            $this->params['username']);
 
         $stmt = $this->pdo->prepare($query);
 
-        if ($stmt->execute([':username' => $username, ':password' => self::hash($password)]) && $user = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        if ($stmt->execute([':username' => $username]) && $user = $stmt->fetch(PDO::FETCH_ASSOC)) {
 
-            unset($user[$this->params['password']]);
+            if(password_verify($password, $user[$this->params['password']])) {
 
-            $_SESSION[$this->params['session_key']] = $user;
-            $query = sprintf(self::UPDATE_LOGIN,
-                $this->params['table'],
-                $this->params['last_login'],
-                $user['id']);
+                unset($user[$this->params['password']]);
 
-            $this->pdo->query($query);
+                $_SESSION[$this->params['session_key']] = $user;
 
-            return $user;
+                $query = sprintf(self::UPDATE_LOGIN,
+                    $this->params['table'],
+                    $this->params['last_login'],
+                    $user['id']);
+
+                $this->pdo->query($query);
+
+
+                return $user;
+            }
+            else {
+                throw new PasswordMismatchException();
+            }
+
+
         } else {
             throw new UserException(sprintf('Invalid user or user not found'));
         }
@@ -151,6 +160,16 @@ class Auth
         }
     }
 
+
+    /**
+     *
+     * Update a user's password
+     *
+     * @param $username
+     * @param $password
+     * @return bool TRUE on success
+     * @throws UserException if no rows were updated
+     */
     public function passwd($username, $password)
     {
 
