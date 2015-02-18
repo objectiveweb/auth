@@ -50,9 +50,7 @@ class AuthTest extends PHPUnit_Framework_TestCase
     public function testRegistration()
     {
 
-        $user = AuthTest::$auth->register([
-            'username' => 'user',
-            'password' => 'test',
+        $user = AuthTest::$auth->register('user', 'test', [
             'email' => 'vagrant@localhost',
             'displayName' => 'Test User'
         ]);

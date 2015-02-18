@@ -61,25 +61,23 @@ class Auth
     }
 
     /**
-     * @param array $user [ username, email, password ]
+     * @param string $username
+     * @param string $password
      * @param array $fields array of additional fields to store on the user table
      */
-    public function register(array $user, $fields = array())
+    public function register($username, $password, $fields = array())
     {
 
-        foreach (['username', 'displayName', 'email'] as $f) {
-            if ($this->params[$f]) {
-                if (!empty($user[$f])) {
-                    $fields['`' . $this->params[$f] . '`'] = $this->pdo->quote($user[$f]);
-                } else {
-                    throw new UserException(sprintf("%s (%s) is required", $f, $this->params[$f]), 128);
-                }
-            }
+        // escape fields
+        foreach($fields as $k => $v) {
+            $fields[$k] = $this->pdo->quote($v);
         }
 
         // TODO test password complexity
-        $fields[$this->params['password']] = $this->pdo->quote(self::hash($user['password']));
-        $fields[$this->params['token']] = $this->pdo->quote(md5(microtime(true)));
+
+        $fields[$this->params['username']] = $this->pdo->quote($username);
+        $fields[$this->params['password']] = $this->pdo->quote(self::hash($password));
+        $fields[$this->params['token']] = $this->pdo->quote(self::hash());
         $fields[$this->params['created']] = 'NOW()';
 
         $query = (sprintf(self::REGISTER_QUERY,
@@ -126,7 +124,7 @@ class Auth
                 $query = sprintf(self::UPDATE_LOGIN,
                     $this->params['table'],
                     $this->params['last_login'],
-                    $user['id']);
+                    $user[$this->params['id']]);
 
                 $this->pdo->query($query);
 
