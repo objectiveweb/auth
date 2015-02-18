@@ -30,8 +30,8 @@ class AuthTest extends PHPUnit_Framework_TestCase
                 `email` VARCHAR(255),
                 `created` DATETIME,
                 `last_login` DATETIME,
-                `password` VARCHAR(60),
-                `token` VARCHAR(32));');
+                `password` CHAR(60),
+                `token` CHAR(32));');
 
         self::$auth = new Auth($pdo, [
             'table' => 'ow_auth_test',
@@ -100,8 +100,6 @@ class AuthTest extends PHPUnit_Framework_TestCase
 
     }
 
-
-
     public function testPasswd()
     {
         $t = self::$auth->passwd('user', "1234");
@@ -114,6 +112,18 @@ class AuthTest extends PHPUnit_Framework_TestCase
 
     }
 
+    public function testUpdate() {
+
+        $user = self::$auth->get('user');
+
+        $this->assertEquals(1, $user['id']);
+
+        self::$auth->update('user', [ 'displayName' => 'Updated name']);
+
+        $user = self::$auth->get('user');
+
+        $this->assertEquals('Updated name', $user['displayName']);
+    }
 
     public function testRequestToken() {
         $token = self::$auth->update_token('user');

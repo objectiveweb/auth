@@ -14,12 +14,11 @@ class Auth
     /** @var \PDO */
     private $pdo;
 
-    const LOGIN_QUERY = "select * from `%s` where `%s` = :username";
+    const SELECT_ALL = "select * from `%s` where `%s` = %s";
     const REGISTER_QUERY = "insert into `%s` (%s) values (%s)";
-    const UPDATE_TOKEN = "UPDATE `%s` SET `%s` = %s";
-    const UPDATE_LOGIN = 'UPDATE `%s` SET `%s` = NOW() WHERE id = %d';
-    const UPDATE_PASSWORD = 'UPDATE `%s` SET `%s` = %s WHERE %s = %s';
     const RESET_PASSWORD = 'UPDATE `%s` SET `%s` = %s, `%s` = NULL WHERE %s = %s';
+    const UPDATE_QUERY = "UPDATE `%s` SET %s WHERE `%s` = %s";
+    const UPDATE_VALUE = "UPDATE `%s` SET `%s` = %s WHERE `%s` = %s";
     const USER_BY_NAME = "SELECT `%s` FROM `%s` WHERE `%s` = %s";
 
     public static function hash($password = null)
@@ -60,16 +59,85 @@ class Auth
     }
 
     /**
-     * @param string $username
-     * @param string $password
-     * @param array $fields array of additional fields to store on the user table
+     * Retrieves a user from the database
+     * @param $username username
+     * @return array user data
+     * @throws UserException
      */
-    public function register($username, $password, $fields = array())
+    public function get($username) {
+        $query = sprintf(self::SELECT_ALL,
+            $this->params['table'],
+            $this->params['username'],
+            $this->pdo->quote($username));
+
+        $stmt = $this->pdo->query($query);
+
+        if($user = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            return $user;
+        }
+        else {
+            throw new UserException('User not found');
+        }
+    }
+
+    /**
+     * @param $username
+     * @param $password
+     * @throws UserException
+     * @throws PasswordMismatchException
+     */
+    public function &login($username, $password)
     {
 
+        $user = $this->get($username);
+
+        if(password_verify($password, $user[$this->params['password']])) {
+
+            unset($user[$this->params['password']]);
+
+            $_SESSION[$this->params['session_key']] = $user;
+
+            if($this->params['last_login']) {
+                $query = sprintf(self::UPDATE_VALUE,
+                    $this->params['table'],
+                    $this->params['last_login'],
+                    'NOW()',
+                    $this->params['id'],
+                    $user[$this->params['id']]);
+
+                $this->pdo->query($query);
+            }
+
+            return $_SESSION[$this->params['session_key']];
+        }
+        else {
+            throw new PasswordMismatchException();
+        }
+
+    }
+
+    /**
+     * Logs out the current user (unsets the session key)
+     */
+    public function logout()
+    {
+        unset($_SESSION[$this->params['session_key']]);
+    }
+
+
+
+    /**
+     * @param string $username
+     * @param string $password
+     * @param array $data associative array of additional columns to store
+     */
+    public function register($username, $password, $data = array())
+    {
+        $fields = [];
+
         // escape fields
-        foreach($fields as $k => $v) {
-            $fields[$k] = $this->pdo->quote($v);
+        foreach($data as $k => $v) {
+            $fields[str_replace(array('\\',"\0" ,'`'), '', $k)] = $this->pdo->quote($v);
         }
 
         // TODO test password complexity
@@ -103,59 +171,11 @@ class Auth
     }
 
     /**
-     * @param $username
-     * @param $password
-     * @throws UserException
-     * @throws PasswordMismatchException
+     * Returns the current logged in user
+     * @return array user data
+     * @throws UserException if noone is logged in
      */
-    public function login($username, $password)
-    {
-
-        $query = sprintf(self::LOGIN_QUERY,
-            $this->params['table'],
-            $this->params['username']);
-
-        $stmt = $this->pdo->prepare($query);
-
-        if ($stmt->execute([':username' => $username]) && $user = $stmt->fetch(PDO::FETCH_ASSOC)) {
-
-            if(password_verify($password, $user[$this->params['password']])) {
-
-                unset($user[$this->params['password']]);
-
-                $_SESSION[$this->params['session_key']] = $user;
-
-                if($this->params['last_login']) {
-                    $query = sprintf(self::UPDATE_LOGIN,
-                        $this->params['table'],
-                        $this->params['last_login'],
-                        $user[$this->params['id']]);
-
-                    $this->pdo->query($query);
-                }
-
-                return $user;
-            }
-            else {
-                throw new PasswordMismatchException();
-            }
-
-
-        } else {
-            throw new UserException(sprintf('Invalid user or user not found'));
-        }
-
-    }
-
-    /**
-     * Logs out the current user (unsets the session key)
-     */
-    public function logout()
-    {
-        unset($_SESSION[$this->params['session_key']]);
-    }
-
-    public function user()
+    public function &user()
     {
         if($this->check()) {
             return $_SESSION[$this->params['session_key']];
@@ -164,7 +184,6 @@ class Auth
             throw new UserException('Not logged in');
         }
     }
-
 
     /**
      *
@@ -178,7 +197,7 @@ class Auth
     public function passwd($username, $password)
     {
 
-        $query = sprintf(self::UPDATE_PASSWORD,
+        $query = sprintf(self::UPDATE_VALUE,
             $this->params['table'],
             $this->params['password'],
             $this->pdo->quote(self::hash($password)),
@@ -229,6 +248,34 @@ class Auth
 
 
     /**
+     * Update arbitrary user data
+     * @param $username
+     * @param array $data associative array of data
+     * @throws UserException if no rows were updated
+     */
+    public function update($username, array $data) {
+        $cond = [];
+
+        foreach($data as $k => $v) {
+            $cond[] = sprintf("`%s` = %s", str_replace(array('\\',"\0" ,'`'), '', $k), $this->pdo->quote($v));
+        }
+
+        $query = sprintf(self::UPDATE_QUERY,
+            $this->params['table'],
+            implode(', ', $cond),
+            $this->params['username'],
+            $this->pdo->quote($username));
+
+        $stmt = $this->pdo->query($query);
+
+        if($stmt === FALSE || $stmt->rowCount() !== 1) {
+            throw new UserException('Error updating user: '.json_encode($this->pdo->errorInfo()));
+        }
+
+    }
+
+
+    /**
      * Generates a new token for the user and update the database
      * @param $username
      * @return string new token
@@ -236,10 +283,12 @@ class Auth
     public function update_token($username) {
         $token = self::hash();
 
-        $query = sprintf(self::UPDATE_TOKEN,
+        $query = sprintf(self::UPDATE_VALUE,
             $this->params['table'],
             $this->params['token'],
-            $this->pdo->quote($token));
+            $this->pdo->quote($token),
+            $this->params['username'],
+            $this->pdo->quote($username));
 
         $stmt = $this->pdo->query($query);
 
