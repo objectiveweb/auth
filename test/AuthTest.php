@@ -33,7 +33,12 @@ class AuthTest extends PHPUnit_Framework_TestCase
                 `password` VARCHAR(60),
                 `token` VARCHAR(32));');
 
-        self::$auth = new Auth($pdo, ['table' => 'ow_auth_test']);
+        self::$auth = new Auth($pdo, [
+            'table' => 'ow_auth_test',
+            'created' => 'created',
+            'token' => 'token',
+            'last_login' => 'last_login'
+        ]);
     }
 
     public function setUp()

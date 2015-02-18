@@ -19,6 +19,7 @@ class Auth
     const UPDATE_TOKEN = "UPDATE `%s` SET `%s` = %s";
     const UPDATE_LOGIN = 'UPDATE `%s` SET `%s` = NOW() WHERE id = %d';
     const UPDATE_PASSWORD = 'UPDATE `%s` SET `%s` = %s WHERE %s = %s';
+    const RESET_PASSWORD = 'UPDATE `%s` SET `%s` = %s, `%s` = NULL WHERE %s = %s';
     const USER_BY_NAME = "SELECT `%s` FROM `%s` WHERE `%s` = %s";
 
     public static function hash($password = null)
@@ -38,12 +39,10 @@ class Auth
             'table' => 'ow_auth',
             'id' => 'id',
             'username' => 'username',
-            'displayName' => 'displayName',
-            'email' => 'email',
             'password' => 'password',
-            'token' => 'token',
-            'created' => 'created',
-            'last_login' => 'last_login'
+            'token' => NULL,
+            'created' => NULL,
+            'last_login' => NULL
         ];
 
         $this->pdo = $pdo;
@@ -77,8 +76,13 @@ class Auth
 
         $fields[$this->params['username']] = $this->pdo->quote($username);
         $fields[$this->params['password']] = $this->pdo->quote(self::hash($password));
-        $fields[$this->params['token']] = $this->pdo->quote(self::hash());
-        $fields[$this->params['created']] = 'NOW()';
+        if($this->params['token']) {
+            $fields[$this->params['token']] = $this->pdo->quote(self::hash());
+        }
+
+        if($this->params['created']) {
+            $fields[$this->params['created']] = 'NOW()';
+        }
 
         $query = (sprintf(self::REGISTER_QUERY,
             $this->params['table'],
@@ -101,7 +105,7 @@ class Auth
     /**
      * @param $username
      * @param $password
-     * @throws UserNotFoundException
+     * @throws UserException
      * @throws PasswordMismatchException
      */
     public function login($username, $password)
@@ -121,13 +125,14 @@ class Auth
 
                 $_SESSION[$this->params['session_key']] = $user;
 
-                $query = sprintf(self::UPDATE_LOGIN,
-                    $this->params['table'],
-                    $this->params['last_login'],
-                    $user[$this->params['id']]);
+                if($this->params['last_login']) {
+                    $query = sprintf(self::UPDATE_LOGIN,
+                        $this->params['table'],
+                        $this->params['last_login'],
+                        $user[$this->params['id']]);
 
-                $this->pdo->query($query);
-
+                    $this->pdo->query($query);
+                }
 
                 return $user;
             }
@@ -156,7 +161,7 @@ class Auth
             return $_SESSION[$this->params['session_key']];
         }
         else {
-            throw new \Exception('Not logged in');
+            throw new UserException('Not logged in');
         }
     }
 
@@ -203,10 +208,11 @@ class Auth
     public function passwd_reset($token, $password)
     {
 
-        $query = sprintf(self::UPDATE_PASSWORD,
+        $query = sprintf(self::RESET_PASSWORD,
             $this->params['table'],
             $this->params['password'],
             $this->pdo->quote(self::hash($password)),
+            $this->params['token'],
             $this->params['token'],
             $this->pdo->quote($token));
 
@@ -238,7 +244,7 @@ class Auth
         $stmt = $this->pdo->query($query);
 
         if($stmt === FALSE || $stmt->rowCount() !== 1) {
-            throw new UserException('User not found');
+            throw new UserException('Token not found');
         }
 
         return $token;
