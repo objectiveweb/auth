@@ -108,7 +108,6 @@ Create a new $auth instance, passing the appropriate parameters
         'displayName' => 'Test User'
     ]);
 
-
 ### Generating a password reset token
 
 When the `token` parameter is enabled in initialization
@@ -122,3 +121,8 @@ When the `token` parameter is enabled in initialization
     catch(UserException $ex) {
         printf('Invalid token provided');
     }
+
+### Updating user data
+
+    $auth->update($username, [ 'email' => 'new@email.com' ]);
+
