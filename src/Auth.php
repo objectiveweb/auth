@@ -171,18 +171,24 @@ class Auth
     }
 
     /**
-     * Returns the current logged in user
+     * Returns the current logged in user or sets the current login data
+     * @param $user array
      * @return array user data
      * @throws UserException if noone is logged in
      */
-    public function &user()
+    public function &user($user = null)
     {
-        if($this->check()) {
-            return $_SESSION[$this->params['session_key']];
+        if($user) {
+            $_SESSION[$this->params['session_key']] = $user;
         }
         else {
-            throw new UserException('Not logged in');
+            if(!$this->check()) {
+                throw new UserException('Not logged in', 403);
+            }
         }
+
+
+        return $_SESSION[$this->params['session_key']];
     }
 
     /**
