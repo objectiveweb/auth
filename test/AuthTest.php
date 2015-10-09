@@ -21,7 +21,7 @@ class AuthTest extends PHPUnit_Framework_TestCase
     public static function setUpBeforeClass()
     {
 
-        $pdo = new PDO('mysql:dbname=objectiveweb;host=192.168.56.101', 'root');
+        $pdo = new PDO('mysql:dbname=objectiveweb;host=localhost', 'root');
         $pdo->query('drop table if exists ow_auth_test');
         $pdo->query('create table ow_auth_test
             (`id` INT UNSIGNED PRIMARY KEY NOT NULL AUTO_INCREMENT,

@@ -33,7 +33,7 @@ class Auth
 
     public function __construct(\PDO $pdo, $params = array())
     {
-        $defaults = [
+        $defaults = array(
             'session_key' => 'ow_auth',
             'table' => 'ow_auth',
             'id' => 'id',
@@ -42,7 +42,7 @@ class Auth
             'token' => NULL,
             'created' => NULL,
             'last_login' => NULL
-        ];
+        );
 
         $this->pdo = $pdo;
 
@@ -63,6 +63,7 @@ class Auth
      * @param $username username
      * @return array user data
      * @throws UserException
+	 * @throws Exception
      */
     public function get($username) {
         $query = sprintf(self::SELECT_ALL,
@@ -72,6 +73,12 @@ class Auth
 
         $stmt = $this->pdo->query($query);
 
+		if(!$stmt) {
+			$error = $this->pdo->errorInfo();
+			
+			throw new \Exception($error[2]);
+		}
+		
         if($user = $stmt->fetch(PDO::FETCH_ASSOC)) {
             return $user;
         }
@@ -133,7 +140,7 @@ class Auth
      */
     public function register($username, $password, $data = array())
     {
-        $fields = [];
+        $fields = array();
 
         // escape fields
         foreach($data as $k => $v) {
@@ -165,9 +172,9 @@ class Auth
             return $fields;
         } else {
             throw new \Exception(sprintf('Error creating user %s: %s',
-                $user[$this->params['username']],
+                $username,
                 json_encode($this->pdo->errorInfo())));
-        };
+        }
     }
 
     /**
@@ -260,7 +267,7 @@ class Auth
      * @throws UserException if no rows were updated
      */
     public function update($username, array $data) {
-        $cond = [];
+        $cond = array();
 
         foreach($data as $k => $v) {
             $cond[] = sprintf("`%s` = %s", str_replace(array('\\',"\0" ,'`'), '', $k), $this->pdo->quote($v));
