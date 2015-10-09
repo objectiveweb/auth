@@ -20,5 +20,8 @@
     "psr-4": {
       "Objectiveweb\\": "src"
     }
-  }
+  },
+  "files": [
+    "src/password.php"
+  ]
 }
