@@ -20,6 +20,7 @@ class Auth
     const UPDATE_QUERY = "UPDATE `%s` SET %s WHERE `%s` = %s";
     const UPDATE_VALUE = "UPDATE `%s` SET `%s` = %s WHERE `%s` = %s";
     const USER_BY_NAME = "SELECT `%s` FROM `%s` WHERE `%s` = %s";
+	const DELETE_QUERY = "DELETE FROM `%s` WHERE `%s` = %s";
 
     public static function hash($password = null)
     {
@@ -98,7 +99,7 @@ class Auth
 
         $user = $this->get($username);
 
-        if(password_verify($password, $user[$this->params['password']])) {
+        if(\password_verify($password, $user[$this->params['password']])) {
 
             unset($user[$this->params['password']]);
 
@@ -269,6 +270,8 @@ class Auth
     public function update($username, array $data) {
         $cond = array();
 
+		unset($data[$this->params['password']]);
+		
         foreach($data as $k => $v) {
             $cond[] = sprintf("`%s` = %s", str_replace(array('\\',"\0" ,'`'), '', $k), $this->pdo->quote($v));
         }
@@ -282,12 +285,25 @@ class Auth
         $stmt = $this->pdo->query($query);
 
         if($stmt === FALSE || $stmt->rowCount() !== 1) {
-            throw new UserException('Error updating user: '.json_encode($this->pdo->errorInfo()));
+            throw new UserException(json_encode($this->pdo->errorInfo()));
         }
 
     }
 
+	public function delete($username) {
+		
+        $query = sprintf(self::DELETE_QUERY,
+            $this->params['table'],
+            $this->params['username'],
+            $this->pdo->quote($username));
 
+        $stmt = $this->pdo->query($query);
+
+        if($stmt === FALSE || $stmt->rowCount() !== 1) {
+            throw new \Exception(json_encode($this->pdo->errorInfo()));
+        }
+	}
+	
     /**
      * Generates a new token for the user and update the database
      * @param $username

@@ -132,5 +132,12 @@ class AuthTest extends PHPUnit_Framework_TestCase
 
         self::$auth->login('user', 'test');
     }
-
+	/**
+     * @expectedException Objectiveweb\Auth\UserException
+     */
+	public function testDelete() {
+		self::$auth->delete("user");
+		 self::$auth->login('nouser', 'pass');
+	}
+       
 }
