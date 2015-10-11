@@ -10,12 +10,12 @@ class AuthController {
 		$this->auth = $auth;	
 	}
 	
-	public function get($username = null) {
-		if(!$username) {
-			// list all
+	public function get($params = array()) {
+		if(is_string($params)) {
+			return $this->auth->get($params);
 		}
 		else {
-			return $this->auth->get($username);
+			return $this->auth->query($params);
 		}
 	}
 	

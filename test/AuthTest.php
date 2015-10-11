@@ -33,12 +33,12 @@ class AuthTest extends PHPUnit_Framework_TestCase
                 `password` CHAR(60),
                 `token` CHAR(32));');
 
-        self::$auth = new Auth($pdo, [
+        self::$auth = new Auth($pdo, array(
             'table' => 'ow_auth_test',
             'created' => 'created',
             'token' => 'token',
             'last_login' => 'last_login'
-        ]);
+        ));
     }
 
     public function setUp()
@@ -55,10 +55,10 @@ class AuthTest extends PHPUnit_Framework_TestCase
     public function testRegistration()
     {
 
-        $user = AuthTest::$auth->register('user', 'test', [
+        $user = AuthTest::$auth->register('user', 'test', array(
             'email' => 'vagrant@localhost',
             'displayName' => 'Test User'
-        ]);
+        ));
 
         $this->assertEquals(1, $user['id']);
 
@@ -112,19 +112,37 @@ class AuthTest extends PHPUnit_Framework_TestCase
 
     }
 
+	/**
+	 * @depends testRegistration
+	 */
     public function testUpdate() {
 
         $user = self::$auth->get('user');
 
         $this->assertEquals(1, $user['id']);
 
-        self::$auth->update('user', [ 'displayName' => 'Updated name']);
+        self::$auth->update('user', array( 'displayName' => 'Updated name' ));
 
         $user = self::$auth->get('user');
 
         $this->assertEquals('Updated name', $user['displayName']);
     }
-
+	
+    /**
+	 * @depends testUpdate
+	 */
+	public function testQuery() {
+		$all = self::$auth->query();
+		
+		$this->assertEquals(1, count($all['_embedded']['ow_auth_test']));
+		
+		$this->assertEquals('Updated name', $all['_embedded']['ow_auth_test'][0]['displayName']);
+		
+		$this->assertEquals(1, $all['page']['totalElements']);
+		$this->assertEquals(1, $all['page']['totalPages']);
+		$this->assertEquals(0, $all['page']['number']);
+	}
+	
     public function testRequestToken() {
         $token = self::$auth->update_token('user');
 
@@ -137,7 +155,7 @@ class AuthTest extends PHPUnit_Framework_TestCase
      */
 	public function testDelete() {
 		self::$auth->delete("user");
-		 self::$auth->login('nouser', 'pass');
+		self::$auth->login('nouser', 'pass');
 	}
        
 }

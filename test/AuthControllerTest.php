@@ -34,12 +34,12 @@ class AuthControllerTest extends PHPUnit_Framework_TestCase
                 `password` CHAR(60),
                 `token` CHAR(32));');
 
-        $auth = new Auth($pdo, [
+        $auth = new Auth($pdo, array(
             'table' => 'ow_auth_test',
             'created' => 'created',
             'token' => 'token',
             'last_login' => 'last_login'
-        ]);
+        ));
 		
 		self::$controller = new AuthController($auth);
     }
@@ -47,11 +47,11 @@ class AuthControllerTest extends PHPUnit_Framework_TestCase
     public function testPost()
     {
 
-        $user = self::$controller->post([
+        $user = self::$controller->post(array(
 			'username' => 'user', 
 			'password' => 'test',
             'email' => 'vagrant@localhost',
-            'displayName' => 'Test User']);
+            'displayName' => 'Test User'));
 
         $this->assertEquals(1, $user['id']);
 
@@ -65,13 +65,28 @@ class AuthControllerTest extends PHPUnit_Framework_TestCase
 
         $this->assertEquals(1, $user['id']);
 	}
-	
+
 	/**
 	 * @depends testGet
 	 */
+	public function testQuery() {
+		$all = self::$controller->get();
+		
+		$this->assertEquals(1, count($all['_embedded']['ow_auth_test']));
+		
+		$this->assertEquals('Test User', $all['_embedded']['ow_auth_test'][0]['displayName']);
+		
+		$this->assertEquals(1, $all['page']['totalElements']);
+		$this->assertEquals(1, $all['page']['totalPages']);
+		$this->assertEquals(0, $all['page']['number']);
+	}
+	
+	/**
+	 * @depends testQuery
+	 */
     public function testPut() {
 
-        self::$controller->put('user', [ 'displayName' => 'Updated name' ]);
+        self::$controller->put('user', array( 'displayName' => 'Updated name' ));
 
         $user = self::$controller->get('user');
 

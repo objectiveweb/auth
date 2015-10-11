@@ -19,9 +19,9 @@
   "autoload": {
     "psr-4": {
       "Objectiveweb\\": "src"
-    }
-  },
-  "files": [
-    "src/password.php"
-  ]
+    },
+    "files": [
+      "src/password.php"
+    ]
+  }
 }

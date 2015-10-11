@@ -14,8 +14,9 @@ class Auth
     /** @var \PDO */
     private $pdo;
 
-    const SELECT_ALL = "select * from `%s` where `%s` = %s";
-    const REGISTER_QUERY = "insert into `%s` (%s) values (%s)";
+    const SELECT_ALL = "SELECT * FROM `%s` where `%s` = %s";
+	const SELECT_SEARCH = "SELECT SQL_CALC_FOUND_ROWS * FROM `%s` WHERE %s";
+    const REGISTER_QUERY = "INSERT INTO `%s` (%s) VALUES (%s)";
     const RESET_PASSWORD = 'UPDATE `%s` SET `%s` = %s, `%s` = NULL WHERE %s = %s';
     const UPDATE_QUERY = "UPDATE `%s` SET %s WHERE `%s` = %s";
     const UPDATE_VALUE = "UPDATE `%s` SET `%s` = %s WHERE `%s` = %s";
@@ -59,6 +60,74 @@ class Auth
         return !empty($_SESSION[$this->params['session_key']]);
     }
 
+	/**
+	 * Queries the Auth table
+	 */
+	public function query($params = array(), $operator = "OR") {
+		
+		$page = intval(@$params['page']);
+		$size = intval(@$params['size']);
+		$sort = @$params['sort'];
+		
+		unset($params['page']);
+		unset($params['size']);
+		unset($params['sort']);
+		
+		if(!$size) $size = 20;
+		
+		$cond = array();
+		$bindings = array();
+		
+		foreach($params as $key => $value) {
+			$cond[] = sprintf("`%s` %s :where_%s", 
+					str_replace('`', '``', $key), 
+					is_null($value) ? 'is' : (strpos($value, '%') !== FALSE ? 'LIKE' : '='),
+					$key);
+			$bindings[":where_$key"] = $value;
+		}
+		
+		$query = sprintf(self::SELECT_SEARCH,
+            $this->params['table'],
+			empty($cond) ? '1=1' : implode(" $operator ", $cond)
+		);
+		
+		$query .= sprintf(" LIMIT %d, %d", $page * $size, $size);
+		
+		$stmt = $this->pdo->prepare($query);
+		
+		$stmt->execute($bindings);
+
+		if(!$stmt) {
+			$error = $this->pdo->errorInfo();
+			
+			throw new \Exception($error[2]);
+		}
+		
+		$data = $stmt->fetchAll(PDO::FETCH_ASSOC);
+		
+		$stmt = $this->pdo->query("SELECT FOUND_ROWS() as count");
+		
+		$count = $stmt->fetch(PDO::FETCH_ASSOC);
+		
+		if(!$count) {
+			throw new \Exception("Error fetching count");
+		}
+		
+ 		$count = intval($count['count']);
+		
+		return array(
+			'_embedded' => array(
+				$this->params['table'] => $data
+			),
+			'page' => array(
+				'size' => $size,
+				'number' => $page,
+				'totalElements' => $count,
+				'totalPages' => ceil($count/$size)
+ 			)
+		);
+	}
+	
     /**
      * Retrieves a user from the database
      * @param $username username
