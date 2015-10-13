@@ -263,9 +263,14 @@ class Auth
 
             return $fields;
         } else {
-            throw new \Exception(sprintf('Error creating user %s: %s',
-                $username,
-                json_encode($this->pdo->errorInfo())));
+            $errorInfo = $this->pdo->errorInfo();
+
+            if($errorInfo[1] == 1062) {
+                throw new \Exception(sprintf("User %s already exists", $username), 409);
+            }
+            else {
+                throw new \Exception($errorInfo[2]);
+            }
         }
     }
 
@@ -425,8 +430,6 @@ class Auth
             if($user[$this->params[$key]] == $username) {
                 throw new \Exception("Cannot delete yourself!");
             }
-
-            print_r($user);
         }
 
         $query = sprintf(self::DELETE_QUERY,
