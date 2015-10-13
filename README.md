@@ -1,5 +1,5 @@
 # auth
-Authentication Library
+Authentication Library [![Build Status](https://travis-ci.org/objectiveweb/auth.svg?branch=master)](https://travis-ci.org/objectiveweb/auth)
 
 ## Setup
 

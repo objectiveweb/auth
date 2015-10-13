@@ -3,7 +3,8 @@
 namespace Objectiveweb\Auth;
 
 class AuthController {
-	
+
+    /** @var  \Objectiveweb\Auth */
 	private $auth;
 	
 	public function __construct($auth) {
@@ -11,34 +12,31 @@ class AuthController {
 	}
 	
 	public function get($params = array()) {
-		if(is_string($params)) {
-			return $this->auth->get($params);
-		}
-		else {
-			return $this->auth->query($params);
-		}
+		if(is_array($params)) {
+            return $this->auth->query($params);
+        }
+        else {
+            return $this->auth->get($params);
+        }
 	}
 	
 	public function post($data) {
-		
-		$username = $data['username'];
-		$password = $data['password'];
-		
-		unset($data['username']);
-		unset($data['password']);
-		
-		return $this->auth->register($username, $password, $data);
+				
+		return $this->auth->register($data);
 		
 	}
 	
 	public function put($username, $data) {
-		if(isset($data['password'])) {
-			$this->auth->passwd($username, $data['password']);
-			
-			unset($data['password']);
-		}
-		
-		return $this->auth->update($username, $data);
+
+        if(!empty($data['password'])) {
+            $this->auth->passwd($username, $data['password']);
+        }
+
+        unset($data['password']);
+
+		$this->auth->update($username, $data);
+
+        return true;
 	}
 	
 	public function delete($username) {

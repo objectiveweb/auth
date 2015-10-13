@@ -21,7 +21,7 @@ class Auth
     const UPDATE_QUERY = "UPDATE `%s` SET %s WHERE `%s` = %s";
     const UPDATE_VALUE = "UPDATE `%s` SET `%s` = %s WHERE `%s` = %s";
     const USER_BY_NAME = "SELECT `%s` FROM `%s` WHERE `%s` = %s";
-	const DELETE_QUERY = "DELETE FROM `%s` WHERE `%s` = %s";
+	const DELETE_QUERY = "DELETE FROM `%s` WHERE `%s` = %s LIMIT 1";
 
     public static function hash($password = null)
     {
@@ -136,9 +136,18 @@ class Auth
 	 * @throws Exception
      */
     public function get($username) {
+
+
+        if(is_numeric($username)) {
+            $key = 'id';
+        }
+        else {
+            $key = 'username';
+        }
+
         $query = sprintf(self::SELECT_ALL,
             $this->params['table'],
-            $this->params['username'],
+            $this->params[$key],
             $this->pdo->quote($username));
 
         $stmt = $this->pdo->query($query);
@@ -153,7 +162,7 @@ class Auth
             return $user;
         }
         else {
-            throw new UserException('User not found');
+            throw new UserException('User not found', 404);
         }
     }
 
@@ -208,8 +217,18 @@ class Auth
      * @param string $password
      * @param array $data associative array of additional columns to store
      */
-    public function register($username, $password, $data = array())
+    public function register($username, $password = null, $data = array())
     {
+		if(is_array($username)) {
+			$data = $username;
+			
+			$username = @$data[$this->params['username']];
+			unset($data[$this->params['username']]);
+			
+			$password = @$data['password'];
+			unset($data['password']);
+		}
+		
         $fields = array();
 
         // escape fields
@@ -217,7 +236,9 @@ class Auth
             $fields[str_replace(array('\\',"\0" ,'`'), '', $k)] = $this->pdo->quote($v);
         }
 
-        // TODO test password complexity
+        if(empty($username) || empty($password)) {
+			throw new \Exception("Por favor informe usuário e senha");
+		}
 
         $fields[$this->params['username']] = $this->pdo->quote($username);
         $fields[$this->params['password']] = $this->pdo->quote(self::hash($password));
@@ -238,6 +259,7 @@ class Auth
         if ($this->pdo->query($query)) {
 
             $fields[$this->params['id']] = $this->pdo->lastInsertId();
+            unset($fields[$this->params['created']]);
 
             return $fields;
         } else {
@@ -280,11 +302,18 @@ class Auth
     public function passwd($username, $password)
     {
 
+        if(is_numeric($username)) {
+            $key = 'id';
+        }
+        else {
+            $key = 'username';
+        }
+
         $query = sprintf(self::UPDATE_VALUE,
             $this->params['table'],
             $this->params['password'],
             $this->pdo->quote(self::hash($password)),
-            $this->params['username'],
+            $this->params[$key],
             $this->pdo->quote($username));
 
 
@@ -338,17 +367,38 @@ class Auth
      */
     public function update($username, array $data) {
         $cond = array();
-
+        unset($data[$this->params['id']]);
 		unset($data[$this->params['password']]);
-		
+
+        if($this->params['token']) {
+            unset($data[$this->params['token']]);
+        }
+
+        if($this->params['created']) {
+            unset($data[$this->params['created']]);
+        }
+
+        if($this->params['last_login']) {
+            unset($data[$this->params['last_login']]);
+        }
+
+
         foreach($data as $k => $v) {
             $cond[] = sprintf("`%s` = %s", str_replace(array('\\',"\0" ,'`'), '', $k), $this->pdo->quote($v));
+        }
+
+
+        if(is_numeric($username)) {
+            $key = 'id';
+        }
+        else {
+            $key = 'username';
         }
 
         $query = sprintf(self::UPDATE_QUERY,
             $this->params['table'],
             implode(', ', $cond),
-            $this->params['username'],
+            $this->params[$key],
             $this->pdo->quote($username));
 
         $stmt = $this->pdo->query($query);
@@ -360,10 +410,28 @@ class Auth
     }
 
 	public function delete($username) {
-		
+
+        if(is_numeric($username)) {
+            $key = 'id';
+        }
+        else {
+            $key = 'username';
+        }
+
+
+        if($this->check()) {
+            $user = $this->user();
+
+            if($user[$this->params[$key]] == $username) {
+                throw new \Exception("Cannot delete yourself!");
+            }
+
+            print_r($user);
+        }
+
         $query = sprintf(self::DELETE_QUERY,
             $this->params['table'],
-            $this->params['username'],
+            $this->params[$key],
             $this->pdo->quote($username));
 
         $stmt = $this->pdo->query($query);
