@@ -324,7 +324,7 @@ class Auth
 
         $stmt = $this->pdo->query($query);
 
-        if($stmt === FALSE) {
+        if($stmt === FALSE || $stmt->rowCount() !== 1) {
             throw new UserException('User not found');
         }
 
@@ -408,7 +408,7 @@ class Auth
 
         $stmt = $this->pdo->query($query);
 
-        if($stmt === FALSE || $stmt->rowCount() !== 1) {
+        if($stmt === FALSE) {
             throw new UserException(json_encode($this->pdo->errorInfo()));
         }
 
