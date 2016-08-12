@@ -11,6 +11,10 @@ class AuthController {
 		$this->auth = $auth;	
 	}
 	
+	public function index() {
+		return $this->get();
+	}
+
 	public function get($params = array()) {
 		if(is_array($params)) {
             return $this->auth->query($params);
