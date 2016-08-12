@@ -7,7 +7,7 @@ class AuthController {
     /** @var  \Objectiveweb\Auth */
 	private $auth;
 	
-	public function __construct($auth) {
+	public function __construct(\Objectiveweb\Auth $auth) {
 		$this->auth = $auth;	
 	}
 	
