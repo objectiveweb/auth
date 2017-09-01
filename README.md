@@ -16,9 +16,9 @@ Setup the auth dependency on your project's composer.json, then run `composer up
 Create a new $auth instance, passing the appropriate parameters
 
     // Auth depends on PDO
-    $pdo = new PDO($dsn);
+    $pdo = new \PDO($dsn);
 
-    $auth = new Auth($pdo, [
+    $auth = new \Objectiveweb\Auth($pdo, [
         'session_key' => 'ow_auth',
         'table' => 'ow_auth',
         'id' => 'id',
