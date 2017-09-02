@@ -8,9 +8,9 @@
 
 require dirname(__DIR__) . '/vendor/autoload.php';
 
-use Objectiveweb\Auth;
+use Objectiveweb\Auth\MysqlAuth;
 
-class AuthTest extends PHPUnit_Framework_TestCase
+class MysqlAuthTest extends PHPUnit_Framework_TestCase
 {
 
     /** @var  Auth */
@@ -33,7 +33,7 @@ class AuthTest extends PHPUnit_Framework_TestCase
                 `password` CHAR(60),
                 `token` CHAR(32));');
 
-        self::$auth = new Auth($pdo, array(
+        self::$auth = new MysqlAuth($pdo, array(
             'table' => 'ow_auth_test',
             'created' => 'created',
             'token' => 'token',
@@ -55,7 +55,7 @@ class AuthTest extends PHPUnit_Framework_TestCase
     public function testRegistration()
     {
 
-        $user = AuthTest::$auth->register('user', 'test', array(
+        $user = self::$auth->register('user', 'test', array(
             'email' => 'vagrant@localhost',
             'displayName' => 'Test User'
         ));
@@ -69,7 +69,7 @@ class AuthTest extends PHPUnit_Framework_TestCase
         $this->assertRegExp('/[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}/',
             $user['created'],
             "Check creation date");
-        $this->assertTrue(AuthTest::$auth->check());
+        $this->assertTrue(self::$auth->check());
 
         // test Session
         $user = self::$auth->user();
@@ -92,7 +92,7 @@ class AuthTest extends PHPUnit_Framework_TestCase
     }
 
     /**
-     * @expectedException Objectiveweb\Auth\PasswordMismatchException
+     * @expectedException Objectiveweb\Auth\AuthException
      */
     public function testInvalidPassword()
     {
