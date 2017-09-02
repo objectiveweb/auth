@@ -206,7 +206,7 @@ class Auth
 
         if ($user = $stmt->fetch(PDO::FETCH_ASSOC)) {
 
-            foreach ($this->params->with as $table => $fk) {
+            foreach ($this->params['with'] as $table => $fk) {
                 $query = sprintf("SELECT * FROM `%s` where `%s` = %s",
                     $table, 
                     $fk,
