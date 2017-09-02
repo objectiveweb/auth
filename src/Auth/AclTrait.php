@@ -9,23 +9,32 @@ trait AclTrait {
     /** @var  \Objectiveweb\Auth */
     private $auth;
 
-//    protected $acl = [
-  //      '*' => Auth::AUTHENTICATED
+    /** @var array */
+    private $user;
+
+    private $acl = [
+        '*' => Auth::AUTHENTICATED
  //       'get' => Auth::ANONYMOUS,
  //       'post' => Auth::AUTHENTICATED
-        // 'public' => Auth::ALL
-   // ];
+ ////// 'public' => Auth::ALL
+    ];
+
+    function aclSetup(Auth $auth, array $acl) {
+        $this->auth = $auth;
+
+        $this->acl = array_merge($this->acl, $acl);
+    }
 
     function before($method, $fn) {
 
-        if(!isset($this->acl)) {
-            error_log("AclTrait loaded but no acl found on ".get_class($this));
-            return;
-        }
-
         if($this->auth->check()) {
             $scopes = [ 'auth' ];
-            // TODO include other user-specific scopes
+
+            $this->user = $this->auth->user();
+
+            if(is_array($this->user['scopes'])) {
+                $scopes = array_merge($scopes, $this->user['scopes']);
+            }
         }
         else {
             $scopes = [ 'anon' ];

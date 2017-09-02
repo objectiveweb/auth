@@ -7,37 +7,18 @@ use Objectiveweb\Auth\PasswordMismatchException;
 
 use PDO;
 
-const ALLOW_ALL = 1;
-const ALLOW_ANON = 2;
-const ALLOW_AUTH = 3;
 
 class Auth
 {
-    const ANONYMOUS = [ 'anon' ];
-    const AUTHENTICATED = [ 'auth' ];
-    const ALL = [ 'anon', 'auth' ];
+    // Base scopes
+    const ANONYMOUS        = [ 'anon' ];
+    const AUTHENTICATED    = [ 'auth' ];
+    const ALL              = [ 'anon', 'auth' ];
 
     private $params;
 
     /** @var \PDO */
     private $pdo;
-
-    const SELECT_ALL = "SELECT * FROM `%s` where `%s` = %s";
-    const SELECT_SEARCH = "SELECT SQL_CALC_FOUND_ROWS * FROM `%s` WHERE %s";
-    const UPDATE_QUERY = "UPDATE `%s` SET %s WHERE `%s` = %s";
-    const UPDATE_VALUE = "UPDATE `%s` SET `%s` = %s WHERE `%s` = %s";
-    const USER_BY_NAME = "SELECT `%s` FROM `%s` WHERE `%s` = %s";
-    const DELETE_QUERY = "DELETE FROM `%s` WHERE `%s` = %s LIMIT 1";
-
-    public static function hash($password = null)
-    {
-        if (!$password) {
-            // return a random token
-            return md5(microtime(true));
-        }
-
-        return password_hash($password, PASSWORD_BCRYPT);
-    }
 
     public function __construct(\PDO $pdo, $params = [])
     {
@@ -47,16 +28,32 @@ class Auth
             'id' => 'id',
             'username' => 'username',
             'password' => 'password',
+            'scopes' => 'scopes',
             'token' => NULL,
             'created' => NULL,
             'last_login' => NULL,
-            'ext_accounts_table' => NULL
+            'ext_accounts_table' => NULL,
+            'with' => []
         ];
 
         $this->pdo = $pdo;
 
         $this->params = array_merge($defaults, $params);
 
+        if(!empty($this->params['ext_accounts_table'])) {
+            $this->params['with'][] = [ $this->params['ext_accounts_table'] => 'user_id' ];
+        }
+
+    }
+
+    public static function hash($password = null)
+    {
+        if (!$password) {
+            // return a random token
+            return md5(microtime(true));
+        }
+
+        return password_hash($password, PASSWORD_BCRYPT);
     }
 
     public function setup() {
@@ -141,7 +138,7 @@ class Auth
             $bindings[":where_$key"] = $value;
         }
 
-        $query = sprintf(self::SELECT_SEARCH,
+        $query = sprintf("SELECT SQL_CALC_FOUND_ROWS * FROM `%s` WHERE %s",
             $this->params['table'],
             empty($cond) ? '1=1' : implode(" $operator ", $cond)
         );
@@ -194,7 +191,7 @@ class Auth
     public function get($username, $key = 'username')
     {
 
-        $query = sprintf(self::SELECT_ALL,
+        $query = sprintf("SELECT * FROM `%s` where `%s` = %s",
             $this->params['table'],
             $this->params[$key],
             $this->pdo->quote($username));
@@ -211,7 +208,8 @@ class Auth
 
             foreach ($this->params->with as $table => $fk) {
                 $query = sprintf("SELECT * FROM `%s` where `%s` = %s",
-                    $table, $fk,
+                    $table, 
+                    $fk,
                     $this->params['id']
                 );
 
@@ -249,7 +247,7 @@ class Auth
             $this->user($user);
 
             if ($this->params['last_login']) {
-                $query = sprintf(self::UPDATE_VALUE,
+                $query = sprintf("UPDATE `%s` SET `%s` = %s WHERE `%s` = %s",
                     $this->params['table'],
                     $this->params['last_login'],
                     'NOW()',
@@ -326,7 +324,11 @@ class Auth
         if ($this->pdo->query($query)) {
             $fields[$this->params['id']] = $this->pdo->lastInsertId();
             unset($fields[$this->params['created']]);
-
+            unset($fields[$this->params['password']]);
+            if(!empty($fields[$this->params['scopes']])) {
+                $fields['params']['scopes'] = explode(",", $fields[$this->params['scopes']]);
+            }
+            
             return $fields;
         } else {
             $errorInfo = $this->pdo->errorInfo();
@@ -342,7 +344,7 @@ class Auth
     /**
      * Returns the current logged in user or sets the current login data
      * @param $user array
-     * @return array user data
+     * @return array user data, sets a new user on session if 
      * @throws UserException if noone is logged in
      */
     public function &user($user = null)
@@ -372,7 +374,7 @@ class Auth
     public function passwd($username, $password, $key = 'username')
     {
 
-        $query = sprintf(self::UPDATE_VALUE,
+        $query = sprintf("UPDATE `%s` SET `%s` = %s WHERE `%s` = %s",
             $this->params['table'],
             $this->params['password'],
             $this->pdo->quote(self::hash($password)),
@@ -452,7 +454,7 @@ class Auth
             $cond[] = sprintf("`%s` = %s", str_replace(array('\\', "\0", '`'), '', $k), $this->pdo->quote($v));
         }
 
-        $query = sprintf(self::UPDATE_QUERY,
+        $query = sprintf("UPDATE `%s` SET %s WHERE `%s` = %s",
             $this->params['table'],
             implode(', ', $cond),
             $this->params[$key],
@@ -477,7 +479,7 @@ class Auth
             }
         }
 
-        $query = sprintf(self::DELETE_QUERY,
+        $query = sprintf("DELETE FROM `%s` WHERE `%s` = %s LIMIT 1",
             $this->params['table'],
             $this->params[$key],
             $this->pdo->quote($username));
@@ -498,7 +500,7 @@ class Auth
     {
         $token = self::hash();
 
-        $query = sprintf(self::UPDATE_VALUE,
+        $query = sprintf("UPDATE `%s` SET `%s` = %s WHERE `%s` = %s",
             $this->params['table'],
             $this->params['token'],
             $this->pdo->quote($token),
@@ -549,6 +551,16 @@ class Auth
         }
     }
 
+    /**
+     * Inserts a new account on $userid, or update the existing one
+     *
+     * @param $userid
+     * @param $provider
+     * @param $uid
+     * @param null $profile
+     * @return bool
+     * @throws \Exception
+     */
     public function update_account($userid, $provider, $uid, $profile = null)
     {
 

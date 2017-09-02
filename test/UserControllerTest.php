@@ -9,12 +9,12 @@
 require dirname(__DIR__) . '/vendor/autoload.php';
 
 use Objectiveweb\Auth;
-use Objectiveweb\Auth\AuthController;
+use Objectiveweb\Auth\UserController;
 
-class AuthControllerTest extends PHPUnit_Framework_TestCase
+class UserControllerTest extends PHPUnit_Framework_TestCase
 {
 
-    /** @var  AuthController */
+    /** @var  UserController */
     protected static $controller;
 
     private static $shared_session = array();
@@ -41,7 +41,7 @@ class AuthControllerTest extends PHPUnit_Framework_TestCase
             'last_login' => 'last_login'
         ));
 		
-		self::$controller = new AuthController($auth);
+		self::$controller = new UserController($auth);
     }
 
     public function testPost()
