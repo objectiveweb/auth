@@ -15,7 +15,7 @@ class Auth
     const AUTHENTICATED    = [ 'auth' ];
     const ALL              = [ 'anon', 'auth' ];
 
-    private $params;
+    public $params;
 
     /** @var \PDO */
     private $pdo;
@@ -41,7 +41,7 @@ class Auth
         $this->params = array_merge($defaults, $params);
 
         if(!empty($this->params['ext_accounts_table'])) {
-            $this->params['with'][] = [ $this->params['ext_accounts_table'] => 'user_id' ];
+            $this->params['with'][$this->params['ext_accounts_table']] = 'user_id';
         }
 
     }
@@ -210,7 +210,7 @@ class Auth
                 $query = sprintf("SELECT * FROM `%s` where `%s` = %s",
                     $table, 
                     $fk,
-                    $this->params['id']
+                    $user[$this->params['id']]
                 );
 
                 $stmt = $this->pdo->query($query);
@@ -243,6 +243,7 @@ class Auth
         if (\password_verify($password, $user[$this->params['password']])) {
 
             unset($user[$this->params['password']]);
+            unset($user[$this->params['token']]);
 
             $this->user($user);
 

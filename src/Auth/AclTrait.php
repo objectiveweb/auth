@@ -7,10 +7,10 @@ use \Objectiveweb\Auth;
 trait AclTrait {
 
     /** @var  \Objectiveweb\Auth */
-    private $auth;
+    protected $auth;
 
     /**  @var array The logged in user data */
-    private $user;
+    protected $user;
 
     /**
      * List of acls for each method, `*` is the fallback
