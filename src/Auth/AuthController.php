@@ -39,11 +39,15 @@ class AuthController
     /**
      * Login a local user
      */
-    function post(array $form)
+    function post(array $user)
     {
-        $this->auth->login($form['username'], $form['password']);
 
-        return $this->auth->user();
+        $username = $user[$this->auth->params['username']];
+        unset($user[$this->auth->params['username']]);
+        $password = $user[$this->auth->params['password']];
+        unset($user[$this->auth->params['password']]);
+
+        return $this->auth->login($username, $password);
     }
 
     /**
