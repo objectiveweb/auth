@@ -18,7 +18,7 @@ class OAuthController extends AuthController
 
     function __construct(\Objectiveweb\Auth $auth, \Opauth $opauth)
     {
-        parent::__construct($auth, $opauth);
+        parent::__construct($auth);
 
         $this->opauth = $opauth;
 
