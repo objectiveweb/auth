@@ -61,7 +61,8 @@ class OAuthController extends AuthController
          * Check if it's an error callback
          */
         if (array_key_exists('error', $response)) {
-            throw new \Exception("Authentication error: Opauth returns error auth response.");
+            $error = json_encode($response['error']);
+            throw new \Exception("Authentication error: {$error}");
         }
 
         /**
@@ -105,7 +106,8 @@ class OAuthController extends AuthController
                             $user = $this->auth->get($username);
                         } catch (UserException $ex) {
                             $user = $this->auth->register($username, null, [
-                                'name' => $response['auth']['info']['name']
+                                'name' => $response['auth']['info']['name'],
+                                'image' => $response['auth']['info']['image']
                             ]);
                         }
                     }
