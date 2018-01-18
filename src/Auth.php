@@ -291,38 +291,40 @@ class Auth
             unset($data['password']);
         }
 
-        $fields = array();
-
-        // escape fields
-        foreach ($data as $k => $v) {
-            $fields[str_replace(array('\\', "\0", '`'), '', $k)] = $this->pdo->quote($v);
-        }
-
         if (empty($username)) {
             throw new \Exception("Please inform your username");
         }
 
-        $fields[$this->params['username']] = $this->pdo->quote($username);
+        $fields = array(
+            $this->params['username'] => $username
+        );
+
+        // escape fields
+        foreach ($data as $k => $v) {
+            $fields[str_replace(array('\\', "\0", '`'), '', $k)] = $v;
+        }
 
         if($password) {
-            $fields[$this->params['password']] = $this->pdo->quote(self::hash($password));
+            $fields[$this->params['password']] = self::hash($password);
         }
 
         if ($this->params['token']) {
-            $fields[$this->params['token']] = $this->pdo->quote(self::hash());
+            $fields[$this->params['token']] = self::hash();
         }
 
         if ($this->params['created']) {
-            $fields[$this->params['created']] = 'NOW()';
+            $fields[$this->params['created']] = date('Y-m-d H:i:s');
         }
 
-        $query = (sprintf("INSERT INTO `%s` (%s) VALUES (%s)",
-            $this->params['table'],
-            implode(", ", array_keys($fields)),
-            implode(", ", array_values($fields))
-        ));
+        $stmt = $this->pdo->prepare("INSERT INTO " . $this->params['table']
+            . " (" . implode(array_keys($fields), ", ")
+            . ") VALUES (:" . implode(array_keys($fields), ", :") . ");");
 
-        if ($this->pdo->query($query)) {
+        foreach($fields as $k => $v) {
+            $stmt->bindValue(":".$k, $v);
+        }
+
+        if ($stmt->execute()) {
             $fields[$this->params['id']] = $this->pdo->lastInsertId();
             unset($fields[$this->params['created']]);
             unset($fields[$this->params['password']]);
@@ -351,6 +353,8 @@ class Auth
     public function &user($user = null)
     {
         if ($user) {
+            unset($user[$this->params['token']]);
+            unset($user[$this->params['password']]);
             $_SESSION[$this->params['session_key']] = $user;
         } else {
             if (!$this->check()) {
