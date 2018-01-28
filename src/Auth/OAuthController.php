@@ -30,6 +30,7 @@ class OAuthController extends AuthController
     function get($provider)
     {
         $this->opauth->run();
+        exit;
     }
 
     /**

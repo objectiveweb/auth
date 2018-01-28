@@ -17,6 +17,8 @@ class Auth
 
     public $params;
 
+    protected $validator;
+
     /** @var \PDO */
     private $pdo;
 
@@ -33,7 +35,8 @@ class Auth
             'created' => NULL,
             'last_login' => NULL,
             'ext_accounts_table' => NULL,
-            'with' => []
+            'with' => [],
+            'validator' => [ $this, 'validate' ]
         ];
 
         $this->pdo = $pdo;
@@ -44,6 +47,24 @@ class Auth
             $this->params['with'][$this->params['ext_accounts_table']] = 'user_id';
         }
 
+    }
+
+    public function validate($user, $auth) {
+        $username = trim(@$user[$this->params['username']]);
+
+        if(empty($username)) {
+            throw new \Exception("Missing username", 400);
+        }
+
+        $user[$this->params['username']] = $username;
+
+        if(isset($user[$this->params['password']])) {
+            if(empty($user[$this->params['password']])) {
+                throw new \Exception("Missing password", 400);
+            }
+        }
+
+        return $user;
     }
 
     public static function hash($password = null)
@@ -260,7 +281,7 @@ class Auth
 
             return $user;
         } else {
-            throw new PasswordMismatchException();
+            throw new \Exception('Password invalid', 400);
         }
 
     }
@@ -273,6 +294,15 @@ class Auth
         unset($_SESSION[$this->params['session_key']]);
     }
 
+    /**
+     * Reloads current user from the db
+     */
+    public function reload() {
+        $user = $this->user();
+        $user = $this->get($user[$this->params['id']], $this->params['id']);
+
+        return $this->user($user);
+    }
 
     /**
      * @param string $username
@@ -289,10 +319,6 @@ class Auth
 
             $password = @$data['password'];
             unset($data['password']);
-        }
-
-        if (empty($username)) {
-            throw new \Exception("Please inform your username");
         }
 
         $fields = array(
@@ -315,6 +341,8 @@ class Auth
         if ($this->params['created']) {
             $fields[$this->params['created']] = date('Y-m-d H:i:s');
         }
+
+        $fields = call_user_func($this->params['validator'], $fields, $this);
 
         $stmt = $this->pdo->prepare("INSERT INTO " . $this->params['table']
             . " (" . implode(array_keys($fields), ", ")
@@ -403,11 +431,13 @@ class Auth
      *
      * @param $token String
      * @param $password String new password
-     * @return bool TRUE on success
+     * @return $user array user data on success
      * @throws UserException if no rows were updated
      */
     public function passwd_reset($token, $password)
     {
+
+        $user = $this->get($token, $this->params['token']);
 
         $query = sprintf('UPDATE `%s` SET `%s` = %s, `%s` = NULL WHERE %s = %s',
             $this->params['table'],
@@ -424,7 +454,7 @@ class Auth
             throw new UserException('Hash not found');
         }
 
-        return TRUE;
+        return $user;
 
     }
 
@@ -593,4 +623,5 @@ class Auth
         return true;
 
     }
+
 }
