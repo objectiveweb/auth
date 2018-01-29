@@ -69,23 +69,34 @@ class AuthController
 
     function postPassword(array $form)
     {
-        if (!empty($form['token'])) {
-            if (empty($form['password']) && $form['password'] != @$form['confirm']) {
+        if ($this->auth->check()) {
+            if (empty($form['password']) || $form['password'] != @$form['confirm']) {
                 throw new \Exception('Passwords dont match', 400);
             }
 
-            $user = $this->auth->passwd_reset($form['token'], $form['password']);
+            $user = $this->auth->user();
 
-            // set current session and return user
-            return $this->auth->user($user);
+            return $this->auth->passwd($user['username'], $form['password']);
         } else {
-            if (empty($form['username'])) {
-                throw new \Exception('Invalid request', 400);
-            }
+            if (!empty($form['token'])) {
+                if (empty($form['password']) || $form['password'] != @$form['confirm']) {
+                    throw new \Exception('Passwords dont match', 400);
+                }
 
-            // return new token
-            return $this->auth->update_token($form['username']);
+                $user = $this->auth->passwd_reset($form['token'], $form['password']);
+
+                // set current session and return user
+                return $this->auth->user($user);
+            } else {
+                if (empty($form['username'])) {
+                    throw new \Exception('Invalid request', 400);
+                }
+
+                // return new token
+                return $this->auth->update_token($form['username']);
+            }
         }
+
     }
 
 
