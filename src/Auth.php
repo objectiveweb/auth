@@ -281,7 +281,7 @@ class Auth
 
             return $user;
         } else {
-            throw new \Exception('Password invalid', 400);
+            throw new PasswordMismatchException('Password invalid', 400);
         }
 
     }
