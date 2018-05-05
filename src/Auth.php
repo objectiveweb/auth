@@ -4,6 +4,10 @@ namespace Objectiveweb;
 
 abstract class Auth {
 
+    // Base scopes
+    const ANONYMOUS        = [ 'anon' ];
+    const AUTHENTICATED    = [ 'auth' ];
+    const ALL              = [ 'anon', 'auth' ];
 
     public $params;
 
