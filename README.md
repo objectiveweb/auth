@@ -8,17 +8,22 @@ Setup the auth dependency on your project's composer.json, then run `composer up
 
 
        "require": {
-           "objectiveweb/auth": "~0.1"
+           "objectiveweb/auth": "~0.2"
        }
 
+Or use the command line
+
+```
+composer require objectiveweb "^0.4"
+```
 ### Auth initialization
 
 Create a new $auth instance, passing the appropriate parameters
 
-    // Auth depends on PDO
-    $pdo = new PDO($dsn);
+    // MysqlAuth depends on PDO
+    $pdo = new \PDO($dsn);
 
-    $auth = new Auth($pdo, [
+    $auth = new \Objectiveweb\Auth\MysqlAuth($pdo, [
         'session_key' => 'ow_auth',
         'table' => 'ow_auth',
         'id' => 'id',
@@ -64,6 +69,8 @@ Create a new $auth instance, passing the appropriate parameters
 
 ## Usage
 
+    include "vendor/autoload.php";
+    
     # register user
     try {
         $user = $auth->register('username', 'password');
@@ -76,7 +83,7 @@ Create a new $auth instance, passing the appropriate parameters
     try {
         $user = $auth->login('username', 'password');
     }
-    catch(PasswordMismatchException $ex) {
+    catch(AuthException $ex) {
         printf("Password mismatch");
     }
     catch(UserException $ex) {

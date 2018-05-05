@@ -22,7 +22,10 @@
   },
   "autoload": {
     "psr-4": {
-      "Objectiveweb\\": "src"
-    }
+      "Objectiveweb\\Auth\\": "src/Auth/"
+    },
+    "files": [
+      "src/Auth.php"
+    ]
   }
 }

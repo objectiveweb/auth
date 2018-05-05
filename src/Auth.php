@@ -74,7 +74,7 @@ abstract class Auth {
             $_SESSION[$this->params['session_key']] = $user;
         } else {
             if (!$this->check()) {
-                throw new UserException('Not logged in', 403);
+                throw new Auth\UserException('Not logged in', 403);
             }
         }
 
