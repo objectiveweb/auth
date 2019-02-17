@@ -22,23 +22,34 @@ class UserControllerTest extends PHPUnit_Framework_TestCase
     public static function setUpBeforeClass()
     {
 
-        $pdo = new PDO('mysql:dbname=objectiveweb;host=localhost', 'root');
-        $pdo->query('drop table if exists ow_auth_test');
-        $pdo->query('create table ow_auth_test
+        $pdo = new PDO('mysql:dbname=objectiveweb;host=mysql', 'root', 'root');
+        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $pdo->exec('drop table if exists ow_credentials');
+        $pdo->exec('drop table if exists ow_user');
+        $pdo->query('create table ow_user
             (`id` INT UNSIGNED PRIMARY KEY NOT NULL AUTO_INCREMENT,
-                `username` VARCHAR(255),
-                `displayName` VARCHAR(255),
-                `email` VARCHAR(255),
+                `name` VARCHAR(255),
+                `image` VARCHAR(255),
+                `scopes` VARCHAR(255),
                 `created` DATETIME,
-                `last_login` DATETIME,
                 `password` CHAR(60),
-                `token` CHAR(32));');
+                `token` CHAR(32))');
+
+        $pdo->query("create table ow_credentials
+            (
+                uid varchar(255) not null,
+                provider varchar(32) not null,
+                user_id int(11) unsigned not null,
+                profile text null,
+                modified datetime null,
+                primary key (uid, provider),
+                constraint credentials_ibfk_1
+                    foreign key (user_id) references ow_user (id)
+            )");
 
         $auth = new MysqlAuth($pdo, array(
-            'table' => 'ow_auth_test',
             'created' => 'created',
-            'token' => 'token',
-            'last_login' => 'last_login'
+            'token' => 'token'
         ));
 		
 		self::$controller = new UserController($auth);
@@ -48,20 +59,19 @@ class UserControllerTest extends PHPUnit_Framework_TestCase
     {
 
         $user = self::$controller->post(array(
-			'username' => 'user', 
+			'uid' => 'vagrant@localhost',
 			'password' => 'test',
-            'email' => 'vagrant@localhost',
-            'displayName' => 'Test User'));
+            'name' => 'Test User'));
 
         $this->assertEquals(1, $user['id']);
 
     }
-	
+
 	/**
 	 * @depends testPost
 	 */
 	public function testGet() {
-		$user = self::$controller->get('user');
+		$user = self::$controller->get(1);
 
         $this->assertEquals(1, $user['id']);
 	}
@@ -71,26 +81,26 @@ class UserControllerTest extends PHPUnit_Framework_TestCase
 	 */
 	public function testQuery() {
 		$all = self::$controller->get();
-		
-		$this->assertEquals(1, count($all['_embedded']['ow_auth_test']));
-		
-		$this->assertEquals('Test User', $all['_embedded']['ow_auth_test'][0]['displayName']);
-		
+
+		$this->assertEquals(1, count($all['_embedded']['ow_user']));
+
+		$this->assertEquals('Test User', $all['_embedded']['ow_user'][0]['name']);
+
 		$this->assertEquals(1, $all['page']['totalElements']);
 		$this->assertEquals(1, $all['page']['totalPages']);
 		$this->assertEquals(0, $all['page']['number']);
 	}
-	
+
 	/**
 	 * @depends testQuery
 	 */
     public function testPut() {
 
-        self::$controller->put('user', array( 'displayName' => 'Updated name' ));
+        self::$controller->put(1, array( 'name' => 'Updated name' ));
 
-        $user = self::$controller->get('user');
+        $user = self::$controller->get(1);
 
-        $this->assertEquals('Updated name', $user['displayName']);
+        $this->assertEquals('Updated name', $user['name']);
     }
 
 	/**
@@ -98,8 +108,8 @@ class UserControllerTest extends PHPUnit_Framework_TestCase
      * @expectedException Objectiveweb\Auth\UserException
      */
 	public function testDelete() {
-		self::$controller->delete('user');
-		
-		$user = self::$controller->get('user');
+		self::$controller->delete(1);
+
+		$user = self::$controller->get(1);
 	}
 }

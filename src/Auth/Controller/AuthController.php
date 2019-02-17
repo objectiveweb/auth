@@ -47,12 +47,12 @@ class AuthController
     function post(array $user)
     {
 
-        $username = $user[$this->auth->params['username']];
-        unset($user[$this->auth->params['username']]);
+        $uid = $user['uid'];
+        unset($user['uid']);
         $password = $user[$this->auth->params['password']];
         unset($user[$this->auth->params['password']]);
 
-        return $this->auth->login($username, $password);
+        return $this->auth->login($uid, $password);
     }
 
     /**
@@ -61,12 +61,12 @@ class AuthController
      */
     function postRegister(array $user)
     {
-        $username = @$user[$this->auth->params['username']];
-        unset($user[$this->auth->params['username']]);
+        $uid = @$user['uid'];
+        unset($user['uid']);
         $password = @$user[$this->auth->params['password']];
         unset($user[$this->auth->params['password']]);
 
-        $user = $this->auth->register($username, $password, $user);
+        $user = $this->auth->register($uid, $password, $user);
 
         return $user;
     }
@@ -74,13 +74,14 @@ class AuthController
     function postPassword(array $form)
     {
         if ($this->auth->check()) {
+            // TODO validar senha anterior
             if (empty($form['password']) || $form['password'] != @$form['confirm']) {
                 throw new AuthException('Passwords dont match', 400);
             }
 
             $user = $this->auth->user();
 
-            return $this->auth->passwd($user['username'], $form['password']);
+            return $this->auth->passwd($user[$this->auth->params['id']], $form['password']);
         } else {
             if (!empty($form['token'])) {
                 if (empty($form['password']) || $form['password'] != @$form['confirm']) {
@@ -92,12 +93,19 @@ class AuthController
                 // set current session and return user
                 return $this->auth->user($user);
             } else {
-                if (empty($form['username'])) {
+                if (empty($form['uid'])) {
                     throw new UserException('Invalid request', 400);
                 }
 
-                // return new token
-                return $this->auth->update_token($form['username']);
+                // find user
+                $account = $this->auth->get_credential('local', $form['uid']);
+
+                if(!empty($account['user'])) {
+                    // return new token
+                    return $this->auth->update_token($account['user']['id']);
+                } else {
+                    throw new UserException('Account not found', 404);
+                }
             }
         }
 

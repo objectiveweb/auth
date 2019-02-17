@@ -2,6 +2,8 @@
 
 namespace Objectiveweb\Auth\Controller;
 
+use Objectiveweb\Auth\UserException;
+
 /**
  * Class UserController
  * Simple controller to manage users using the Auth service
@@ -35,21 +37,28 @@ class UserController {
 		return $this->auth->register($data);
 		
 	}
-	
-	public function put($username, $data) {
+
+
+	public function put($user_id, $data) {
+
+	    $user = $this->auth->get($user_id);
+
+	    if(!$user) {
+	        throw new UserException('User does not exist', 404);
+        }
 
         if(!empty($data['password'])) {
-            $this->auth->passwd($username, $data['password']);
+            $this->auth->passwd($user[$this->auth->params['id']], $data['password']);
         }
 
         unset($data['password']);
 
-		$this->auth->update($username, $data);
+		$this->auth->update($user[$this->auth->params['id']], $data);
 
         return true;
 	}
 	
-	public function delete($username) {
-		$this->auth->delete($username);
+	public function delete($uid) {
+		$this->auth->delete($uid);
 	}
 }
