@@ -25,7 +25,7 @@ class BasicAuth extends \Objectiveweb\Auth {
     {
         $result = [];
         foreach ($this->passwd as $user => $pass) {
-            if(strpos($user[$this->params['username']], $params['username']) !== FALSE) {
+            if(strpos($user['uid'], $params['uid']) !== FALSE) {
                 $result[] = $user;
             }
         }
@@ -95,13 +95,13 @@ class BasicAuth extends \Objectiveweb\Auth {
         // TODO: Implement update_token() method.
     }
 
-    public function get_account($provider, $accountid)
+    public function get_credential($provider, $accountid)
     {
-        // TODO: Implement get_account() method.
+        // TODO: Implement get_credential() method.
     }
 
-    public function update_account($userid, $provider, $uid, $profile = null)
+    public function update_credential($userid, $provider, $uid, $profile = null)
     {
-        // TODO: Implement update_account() method.
+        // TODO: Implement update_credential() method.
     }
 }

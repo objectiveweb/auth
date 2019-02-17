@@ -20,25 +20,37 @@ class MysqlAuthTest extends PHPUnit_Framework_TestCase
 
     public static function setUpBeforeClass()
     {
-
-        $pdo = new PDO('mysql:dbname=objectiveweb;host=localhost', 'root');
-        $pdo->query('drop table if exists ow_auth_test');
-        $pdo->query('create table ow_auth_test
+        $pdo = new PDO('mysql:dbname=objectiveweb;host=mysql', 'root', 'root');
+        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $pdo->exec('drop table if exists ow_credentials');
+        $pdo->exec('drop table if exists ow_user');
+        $pdo->query('create table ow_user
             (`id` INT UNSIGNED PRIMARY KEY NOT NULL AUTO_INCREMENT,
-                `username` VARCHAR(255),
-                `displayName` VARCHAR(255),
-                `email` VARCHAR(255),
+                `name` VARCHAR(255),
+                `image` VARCHAR(255),
+                `scopes` VARCHAR(255),
                 `created` DATETIME,
-                `last_login` DATETIME,
                 `password` CHAR(60),
-                `token` CHAR(32));');
+                `token` CHAR(32))');
+
+        $pdo->query("create table ow_credentials
+            (
+                uid varchar(255) not null,
+                provider varchar(32) not null,
+                user_id int(11) unsigned not null,
+                profile text null,
+                modified datetime null,
+                primary key (uid, provider),
+                constraint credentials_ibfk_1
+                    foreign key (user_id) references ow_user (id)
+
+            )");
 
         self::$auth = new MysqlAuth($pdo, array(
-            'table' => 'ow_auth_test',
             'created' => 'created',
-            'token' => 'token',
-            'last_login' => 'last_login'
+            'token' => 'token'
         ));
+
     }
 
     public function setUp()
@@ -55,15 +67,14 @@ class MysqlAuthTest extends PHPUnit_Framework_TestCase
     public function testRegistration()
     {
 
-        $user = self::$auth->register('user', 'test', array(
-            'email' => 'vagrant@localhost',
-            'displayName' => 'Test User'
+        $user = self::$auth->register('vagrant@localhost', 'test', array(
+            'name' => 'Test User'
         ));
 
         $this->assertEquals(1, $user['id']);
 
         // test Login
-        $user = self::$auth->login('user', 'test');
+        $user = self::$auth->login('vagrant@localhost', 'test');
 
         $this->assertEquals(1, $user['id'], "Check user ID");
         $this->assertRegExp('/[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}/',
@@ -96,17 +107,22 @@ class MysqlAuthTest extends PHPUnit_Framework_TestCase
      */
     public function testInvalidPassword()
     {
-        self::$auth->login('user', 'pass');
+        self::$auth->login('vagrant@localhost', 'pass');
 
     }
 
     public function testPasswd()
     {
-        $t = self::$auth->passwd('user', "1234");
+
+        $account = self::$auth->get_credential('local', 'vagrant@localhost');
+
+        $this->assertNotNull($account);
+
+        $t = self::$auth->passwd($account['user_id'], "1234");
 
         $this->assertTrue($t);
 
-        $user = self::$auth->login('user', '1234');
+        $user = self::$auth->login('vagrant@localhost', '1234');
 
         $this->assertEquals(1, $user['id']);
 
@@ -117,15 +133,17 @@ class MysqlAuthTest extends PHPUnit_Framework_TestCase
 	 */
     public function testUpdate() {
 
-        $user = self::$auth->get('user');
+        $account = self::$auth->get_credential('local', 'vagrant@localhost');
+
+        $user = self::$auth->get($account['user_id']);
 
         $this->assertEquals(1, $user['id']);
 
-        self::$auth->update('user', array( 'displayName' => 'Updated name' ));
+        self::$auth->update($account['user_id'], array( 'name' => 'Updated name' ));
 
-        $user = self::$auth->get('user');
+        $user = self::$auth->get($account['user_id']);
 
-        $this->assertEquals('Updated name', $user['displayName']);
+        $this->assertEquals('Updated name', $user['name']);
     }
 	
     /**
@@ -134,9 +152,9 @@ class MysqlAuthTest extends PHPUnit_Framework_TestCase
 	public function testQuery() {
 		$all = self::$auth->query();
 		
-		$this->assertEquals(1, count($all['_embedded']['ow_auth_test']));
+		$this->assertEquals(1, count($all['_embedded']['ow_user']));
 		
-		$this->assertEquals('Updated name', $all['_embedded']['ow_auth_test'][0]['displayName']);
+		$this->assertEquals('Updated name', $all['_embedded']['ow_user'][0]['name']);
 		
 		$this->assertEquals(1, $all['page']['totalElements']);
 		$this->assertEquals(1, $all['page']['totalPages']);
@@ -144,19 +162,23 @@ class MysqlAuthTest extends PHPUnit_Framework_TestCase
 	}
 	
     public function testRequestToken() {
-        $token = self::$auth->update_token('user');
+	    $account = self::$auth->get_credential('local', 'vagrant@localhost');
+
+        $token = self::$auth->update_token($account['user_id']);
 
         self::$auth->passwd_reset($token, 'test');
 
-        self::$auth->login('user', 'test');
+        self::$auth->login('vagrant@localhost', 'test');
     }
 	/**
      * @expectedException Objectiveweb\Auth\UserException
      */
 	public function testDelete() {
-		self::$auth->logout();
-		self::$auth->delete("user");
-		self::$auth->login('user', 'pass');
+        $account = self::$auth->get_credential('local', 'vagrant@localhost');
+
+        self::$auth->logout();
+		self::$auth->delete($account['user_id']);
+		self::$auth->login('vagrant@localhost', 'pass');
 	}
        
 }

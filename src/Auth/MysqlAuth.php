@@ -18,69 +18,23 @@ class MysqlAuth extends \Objectiveweb\Auth
         $this->pdo = $pdo;
 
         $defaults = [
-            'table' => 'ow_auth',
+            'table' => 'user',
+            'prefix' => 'ow_',
             'created' => NULL,
             'last_login' => NULL,
-            'ext_accounts_table' => NULL,
+            'credentials_table' => 'credentials',
             'with' => []
         ];
 
         parent::__construct(array_merge($defaults, $params));
 
-        if(!empty($this->params['ext_accounts_table'])) {
-            $this->params['with'][$this->params['ext_accounts_table']] = 'user_id';
-        }
-
-    }
-
-    public function setup() {
-
-        $fields = [
-            "{$this->params['id']} INT UNSIGNED PRIMARY KEY AUTO_INCREMENT",
-            "{$this->params['username']} VARCHAR(255) NOT NULL",
-            "{$this->params['password']} VARCHAR(255)"
-        ];
-
-        if($this->params['token']) {
-            $fields[] = "{$this->params['token']} CHAR(32)";
-        }
-
-        if($this->params['created']) {
-            $fields[]  = "{$this->params['created']} DATETIME";
-        }
-
-        if($this->params['last_login']) {
-            $fields[] = "{$this->params['last_login']} DATETIME";
-        }
-
-
-        $queries[] = sprintf("CREATE TABLE `%s` (%s)",
-            $this->params['table'],
-            implode(",", $fields));
-
-        $queries[] = sprintf("CREATE UNIQUE INDEX %s_username_uindex ON %s (%s)",
-            $this->params['table'],
-            $this->params['table'],
-            $this->params['username']);
-
-        if($this->params['ext_accounts_table']) {
-            $queries[] = sprintf("CREATE TABLE `%s` ( 
-            user_id INT UNSIGNED NOT NULL,
-            provider VARCHAR(32) NOT NULL,
-            uid VARCHAR(255) NOT NULL,
-	        profile text null,
-            CONSTRAINT auth_accounts_uid_provider_user_id_pk PRIMARY KEY (uid, provider, user_id),
-            CONSTRAINT auth_accounts_users_id_fk FOREIGN KEY (user_id) REFERENCES %s (%s))",
-                $this->params['ext_accounts_table'],
-                $this->params['table'],
-                $this->params['id']);
-        }
-
-        return $queries;
+        $this->params['table'] = $this->params['prefix'] . $this->params['table'];
+        $this->params['credentials_table'] = $this->params['prefix'] . $this->params['credentials_table'];
+        $this->params['with'][$this->params['credentials_table']] = 'user_id';
     }
 
     /**
-     * Queries the Auth table
+     * Queries the user table
      */
     public function query($params = array(), $operator = "OR")
     {
@@ -106,7 +60,8 @@ class MysqlAuth extends \Objectiveweb\Auth
             $bindings[":where_$key"] = $value;
         }
 
-        $query = sprintf("SELECT SQL_CALC_FOUND_ROWS * FROM `%s` WHERE %s",
+        $query = sprintf(/** @lang text */
+            "SELECT SQL_CALC_FOUND_ROWS * FROM `%s` WHERE %s",
             $this->params['table'],
             empty($cond) ? '1=1' : implode(" $operator ", $cond)
         );
@@ -150,19 +105,22 @@ class MysqlAuth extends \Objectiveweb\Auth
 
     /**
      * Retrieves a user from the database
-     * @param $username String username
-     * @param $key String which key to lookup (username, id, token)
+     * @param $user_id String user_id
+     * @param $key String which key to lookup (id, token)
      * @return array user data
      * @throws UserException
      * @throws \Exception
      */
-    public function get($username, $key = 'username')
+    public function get($user_id, $key = 'id')
     {
 
-        $query = sprintf("SELECT * FROM `%s` where `%s` = %s",
+        $key = $key == 'credential' ?
+
+        $query = sprintf(/** @lang text */
+            "SELECT * FROM `%s` where `%s` = %s",
             $this->params['table'],
             $this->params[$key],
-            $this->pdo->quote($username));
+            $this->pdo->quote($user_id));
 
         $stmt = $this->pdo->query($query);
 
@@ -175,8 +133,9 @@ class MysqlAuth extends \Objectiveweb\Auth
         if ($user = $stmt->fetch(PDO::FETCH_ASSOC)) {
 
             foreach ($this->params['with'] as $table => $fk) {
-                $query = sprintf("SELECT * FROM `%s` where `%s` = %s",
-                    $table, 
+                $query = sprintf(/** @lang text */
+                    "SELECT * FROM `%s` where `%s` = %s",
+                    $table,
                     $fk,
                     $user[$this->params['id']]
                 );
@@ -198,68 +157,50 @@ class MysqlAuth extends \Objectiveweb\Auth
         }
     }
 
-    /**
-     * @param $username
-     * @param $password
-     * @throws UserException
-     * @throws AuthException
-     */
-    public function &login($username, $password)
-    {
-        $user = $this->get($username);
-
-        if (\password_verify($password, $user[$this->params['password']])) {
-
-            unset($user[$this->params['password']]);
-            unset($user[$this->params['token']]);
-
-            $this->user($user);
-
-            if ($this->params['last_login']) {
-                $query = sprintf("UPDATE `%s` SET `%s` = %s WHERE `%s` = %s",
-                    $this->params['table'],
-                    $this->params['last_login'],
-                    'NOW()',
-                    $this->params['id'],
-                    $user[$this->params['id']]);
-
-                $this->pdo->query($query);
-            }
-
-            return $user;
-        } else {
-            throw new AuthException('Password invalid', 400);
-        }
-
-    }
 
     /**
-     * @param string $username
+     *
+     * TODO usar transaction, atualizar credentials
+     *
+     * @param string $uid
      * @param string $password
      * @param array $data associative array of additional columns to store
      */
-    public function register($username, $password = null, $data = array())
+    public function register($uid, $password = null, $data = array())
     {
-        if (is_array($username)) {
-            $data = $username;
+        $fields = [];
 
-            $username = @$data[$this->params['username']];
-            unset($data[$this->params['username']]);
+        if (is_array($uid)) {
+            $data = array_merge($uid, $data);
+
+            $uid = @$data['uid'];
+            unset($data['uid']);
 
             $password = @$data['password'];
             unset($data['password']);
+
         }
 
-        $fields = array(
-            $this->params['username'] => $username
-        );
+        $provider = empty($data['provider']) ? 'local' : $data['provider'];
+        unset($data['provider']);
 
-        // escape fields
+        $user = $this->get_credential($provider, $uid);
+
+        if (!empty($user)) {
+            $ex = new UserException('User already registered', 409);
+            $ex->setUser($user['user']);
+            throw $ex;
+        }
+
+        $profile = !empty($data['profile']) ? json_encode($data['profile']) : null;
+        unset($data['profile']);
+
+        // escape and encode fields
         foreach ($data as $k => $v) {
-            $fields[str_replace(array('\\', "\0", '`'), '', $k)] = $v;
+            $fields[str_replace(array('\\', "\0", '`'), '', $k)] = is_array($v) ? json_encode($v) : $v;
         }
 
-        if($password) {
+        if ($password) {
             $fields[$this->params['password']] = self::hash($password);
         }
 
@@ -271,33 +212,48 @@ class MysqlAuth extends \Objectiveweb\Auth
             $fields[$this->params['created']] = date('Y-m-d H:i:s');
         }
 
-        $fields = $this->validate($fields);
+        $this->pdo->beginTransaction();
 
         $stmt = $this->pdo->prepare("INSERT INTO " . $this->params['table']
             . " (" . implode(array_keys($fields), ", ")
             . ") VALUES (:" . implode(array_keys($fields), ", :") . ");");
 
-        foreach($fields as $k => $v) {
-            $stmt->bindValue(":".$k, $v);
+        foreach ($fields as $k => $v) {
+            $stmt->bindValue(":" . $k, $v);
         }
 
         if ($stmt->execute()) {
             $fields[$this->params['id']] = $this->pdo->lastInsertId();
             unset($fields[$this->params['created']]);
             unset($fields[$this->params['password']]);
-            if(!empty($fields[$this->params['scopes']])) {
+            if (!empty($fields[$this->params['scopes']])) {
                 $fields['params']['scopes'] = explode(",", $fields[$this->params['scopes']]);
             }
-            
-            return $fields;
         } else {
+            $this->pdo->rollBack();
             $errorInfo = $this->pdo->errorInfo();
 
             if ($errorInfo[1] == 1062) {
-                throw new \Exception(sprintf("User %s already exists", $username), 409);
+                throw new \Exception(sprintf("User %s already exists", $uid), 409);
             } else {
                 throw new \Exception($errorInfo[2]);
             }
+        }
+
+        $stmt = $this->pdo->prepare("INSERT INTO `{$this->params['credentials_table']}` 
+            (user_id, provider, uid, profile) VALUES (:user_id, :provider, :uid, :profile)");
+        $stmt->bindValue(':user_id', $fields[$this->params['id']]);
+        $stmt->bindValue(':provider', $provider);
+        $stmt->bindValue(':uid', $uid);
+        $stmt->bindValue(':profile', $profile);
+
+        if ($stmt->execute()) {
+            $this->pdo->commit();
+            return $fields;
+        } else {
+            $this->pdo->rollBack();
+            $errorInfo = $this->pdo->errorInfo();
+            throw new \Exception($errorInfo[2]);
         }
     }
 
@@ -305,22 +261,22 @@ class MysqlAuth extends \Objectiveweb\Auth
      *
      * Update a user's password
      *
-     * @param $username
+     * @param user_id
      * @param $password
-     * @param $key String username or id
+     * @param $key String id
      * @return bool TRUE on success
      * @throws UserException if no rows were updated
      */
-    public function passwd($username, $password, $key = 'username')
+    public function passwd($user_id, $password, $key = 'id')
     {
 
-        $query = sprintf("UPDATE `%s` SET `%s` = %s WHERE `%s` = %s",
+        $query = sprintf(/** @lang text */
+            "UPDATE `%s` SET `%s` = %s WHERE `%s` = %s",
             $this->params['table'],
             $this->params['password'],
             $this->pdo->quote(self::hash($password)),
             $this->params[$key],
-            $this->pdo->quote($username));
-
+            $this->pdo->quote($user_id));
 
         $stmt = $this->pdo->query($query);
 
@@ -346,7 +302,8 @@ class MysqlAuth extends \Objectiveweb\Auth
 
         $user = $this->get($token, $this->params['token']);
 
-        $query = sprintf('UPDATE `%s` SET `%s` = %s, `%s` = NULL WHERE %s = %s',
+        $query = sprintf(/** @lang text */
+            'UPDATE `%s` SET `%s` = %s, `%s` = NULL WHERE %s = %s',
             $this->params['table'],
             $this->params['password'],
             $this->pdo->quote(self::hash($password)),
@@ -368,12 +325,12 @@ class MysqlAuth extends \Objectiveweb\Auth
 
     /**
      * Update arbitrary user data
-     * @param $username
+     * @param $user_id
      * @param array $data associative array of data
-     * @param key String username or id
+     * @param key String
      * @throws UserException if no rows were updated
      */
-    public function update($username, array $data, $key = 'username')
+    public function update($user_id, array $data, $key = 'id')
     {
         $cond = array();
         unset($data[$this->params['id']]);
@@ -396,11 +353,12 @@ class MysqlAuth extends \Objectiveweb\Auth
             $cond[] = sprintf("`%s` = %s", str_replace(array('\\', "\0", '`'), '', $k), $this->pdo->quote($v));
         }
 
-        $query = sprintf("UPDATE `%s` SET %s WHERE `%s` = %s",
+        $query = sprintf(/** @lang text */
+            "UPDATE `%s` SET %s WHERE `%s` = %s",
             $this->params['table'],
             implode(', ', $cond),
             $this->params[$key],
-            $this->pdo->quote($username));
+            $this->pdo->quote($user_id));
 
         $stmt = $this->pdo->query($query);
 
@@ -410,44 +368,60 @@ class MysqlAuth extends \Objectiveweb\Auth
 
     }
 
-    public function delete($username, $key = 'username')
+    public function delete($user_id)
     {
 
         if ($this->check()) {
             $user = $this->user();
 
-            if ($user[$this->params[$key]] == $username) {
+            if ($user[$this->params[$key]] == $user_id) {
                 throw new \Exception("Cannot delete yourself!");
             }
         }
 
-        $query = sprintf("DELETE FROM `%s` WHERE `%s` = %s LIMIT 1",
-            $this->params['table'],
-            $this->params[$key],
-            $this->pdo->quote($username));
+        $this->pdo->beginTransaction();
 
-        $stmt = $this->pdo->query($query);
+        $stmt = $this->pdo->prepare(/** @lang text */
+            "DELETE FROM `{$this->params['credentials_table']}` WHERE `user_id` = :user_id");
 
-        if ($stmt === FALSE || $stmt->rowCount() !== 1) {
+        $stmt->bindValue(':user_id', $user_id);
+
+        if ($stmt->execute() === FALSE) {
+            $this->pdo->rollBack();
             throw new \Exception(json_encode($this->pdo->errorInfo()));
         }
+
+        $stmt = $this->pdo->prepare(/** @lang text */
+            "DELETE FROM `{$this->params['table']}` WHERE `{$this->params['id']}` = :user_id LIMIT 1");
+
+        $stmt->bindValue(':user_id', $user_id);
+
+        if ($stmt->execute() === FALSE) {
+            $this->pdo->rollBack();
+            throw new \Exception(json_encode($this->pdo->errorInfo()));
+        }
+
+        $this->pdo->commit();
+
+        return true;
     }
 
     /**
      * Generates a new token for the user and update the database
-     * @param $username
+     * @param $user_id
      * @return string new token
      */
-    public function update_token($username)
+    public function update_token($user_id)
     {
         $token = self::hash();
 
-        $query = sprintf("UPDATE `%s` SET `%s` = %s WHERE `%s` = %s",
+        $query = sprintf(/** @lang text */
+            "UPDATE `%s` SET `%s` = %s WHERE `%s` = %s",
             $this->params['table'],
             $this->params['token'],
             $this->pdo->quote($token),
-            $this->params['username'],
-            $this->pdo->quote($username));
+            $this->params['id'],
+            $this->pdo->quote($user_id));
 
         $stmt = $this->pdo->query($query);
 
@@ -459,17 +433,19 @@ class MysqlAuth extends \Objectiveweb\Auth
     }
 
     /**
-     * Retrieves an account from ext_accounts_table
+     * Retrieves an account from credentials_table
+     * @param $provider provider
      * @param $userid String user_id
-     * @param $key String which key to lookup (username, id, token)
      * @return mixed account data or null if account not found
      * @throws \Exception
      */
-    public function get_account($provider, $accountid)
+    public function get_credential($provider, $accountid)
     {
-        $query = sprintf("SELECT a.user_id, a.provider, a.uid, a.profile
-              FROM `%s` a WHERE a.provider = %s and a.uid = %s",
-            $this->params['ext_accounts_table'],
+        $query = sprintf(/** @lang text */
+            "SELECT a.user_id, a.provider, a.uid, a.profile
+              FROM `%s` a 
+              WHERE a.provider = %s and a.uid = %s",
+            $this->params['credentials_table'],
             $this->pdo->quote($provider),
             $this->pdo->quote($accountid));
 
@@ -478,13 +454,18 @@ class MysqlAuth extends \Objectiveweb\Auth
         if (!$stmt) {
             $error = $this->pdo->errorInfo();
 
-            throw new \Exception($error[2]);
+            throw new \Exception($error[2], 500);
         }
 
         if ($account = $stmt->fetch(PDO::FETCH_ASSOC)) {
-
-            if(!empty($account['profile'])) {
+            if (!empty($account['profile'])) {
                 $account['profile'] = json_decode($account['profile'], true);
+            }
+
+            if (!empty($account['user_id'])) {
+                $account['user'] = $this->get($account['user_id']);
+            } else {
+                $account['user'] = null;
             }
 
             return $account;
@@ -503,32 +484,31 @@ class MysqlAuth extends \Objectiveweb\Auth
      * @return bool
      * @throws \Exception
      */
-    public function update_account($userid, $provider, $uid, $profile = null)
+    public function update_credential($userid, $provider, $uid, $profile = null)
     {
 
-        if(is_array($profile)) {
+        if (is_array($profile)) {
             $profile = json_encode($profile);
         }
 
-        $query = sprintf("INSERT INTO `%s` (
-           user_id, provider, uid, profile 
-        ) VALUES (%s, %s, %s, %s)
-        ON DUPLICATE KEY UPDATE profile = VALUES(profile)",
-            $this->params['ext_accounts_table'],
+        $query = sprintf(/** @lang text */
+            "INSERT INTO `%s` (user_id, provider, uid, profile) VALUES (%s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE profile = VALUES(profile), modified = %s",
+            $this->params['credentials_table'],
             $this->pdo->quote($userid),
             $this->pdo->quote($provider),
             $this->pdo->quote($uid),
-            $this->pdo->quote($profile)
+            $this->pdo->quote($profile),
+            $this->pdo->quote(date('Y-m-d H:i:s'))
         );
 
         if (!$this->pdo->query($query)) {
             $errorInfo = $this->pdo->errorInfo();
 
-            throw new \Exception($errorInfo[2]);
+            throw new \Exception($errorInfo[2], 500);
         }
 
         return true;
 
     }
-
 }

@@ -65,6 +65,7 @@ class OAuthController extends AuthController
     }
 
     /**
+     * Login with oauth2 credentials. Create a new user if it doesn't exist
      * @param $provider
      * @param \League\OAuth2\Client\Provider\ResourceOwnerInterface $resourceOwner
      * @return mixed
@@ -72,49 +73,30 @@ class OAuthController extends AuthController
     private function login($provider, $resourceOwner) {
 
         // Interface fields
-        $uid = $resourceOwner->getId();
-        $data = $resourceOwner->toArray();
+        $data = [
+            'uid' => $resourceOwner->getId(),
+            'provider' => $provider,
+            'profile' => $resourceOwner->toArray(),
+            'name' => $resourceOwner->getName(),
+            'image' => is_callable([$resourceOwner, 'getAvatar']) ? $resourceOwner->getAvatar() : $resourceOwner->getPictureUrl()
+        ];
 
-        // Implementation-specific fields
-        $email = $resourceOwner->getEmail();
-        $name = $resourceOwner->getName();
-        $image = is_callable([$resourceOwner, 'getAvatar']) ? $resourceOwner->getAvatar() : $resourceOwner->getPictureUrl();
-        $account = $this->auth->get_account($provider, $uid);
+        $data['profile']['email'] = $resourceOwner->getEmail();
 
-        // if account does not exist, create
-        if (!$account) {
-            // if already logged in
-            if ($this->auth->check()) {
-                $user = $this->auth->user();
+        try {
+            $user = $this->auth->register($data);
+        } catch(UserException $ex) {
+            if ($ex->getCode() == 409) {
+                $user = $ex->getUser();
+
+                // Add account to the user
+                $this->auth->update_credential($user[$this->auth->params['id']],
+                    $provider,
+                    $uid,
+                    $data['profile']);
             } else {
-                // create new user
-                $username = empty($email) ?
-                    "{$provider}:{$uid}"
-                    : $email;
-
-                // see if there's account with the same username
-                try {
-                    $user = $this->auth->get($username);
-                } catch (UserException $ex) {
-                    $user = $this->auth->register($username, null, [
-                        'name' => $name,
-                        'image' => $image
-                    ]);
-                }
+                throw $ex;
             }
-
-            // Add account to the user
-            $this->auth->update_account($user[$this->auth->params['id']],
-                $provider,
-                $uid,
-                $data);
-
-            // fetch updated user
-            $user = $this->auth->get($user[$this->auth->params['id']], $this->auth->params['id']);
-        }
-        else {
-            // account exists, fetch existing user
-            $user = $this->auth->get($account['user_id'], $this->auth->params['id']);
         }
 
         // Set session
