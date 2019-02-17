@@ -6,52 +6,17 @@
  * Time: 15:43
  */
 
-require dirname(__DIR__) . '/vendor/autoload.php';
+#require dirname(__DIR__) . '/vendor/autoload.php';
+
+require __DIR__ . '/Mysql_TestCase.php';
 
 use Objectiveweb\Auth\MysqlAuth;
 
-class MysqlAuthTest extends PHPUnit_Framework_TestCase
+class MysqlAuthTest extends Mysql_TestCase
 {
-
-    /** @var  Auth */
-    protected static $auth;
 
     private static $shared_session = array();
 
-    public static function setUpBeforeClass()
-    {
-        $pdo = new PDO('mysql:dbname=objectiveweb;host=mysql', 'root', 'root');
-        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-        $pdo->exec('drop table if exists ow_credentials');
-        $pdo->exec('drop table if exists ow_user');
-        $pdo->query('create table ow_user
-            (`id` INT UNSIGNED PRIMARY KEY NOT NULL AUTO_INCREMENT,
-                `name` VARCHAR(255),
-                `image` VARCHAR(255),
-                `scopes` VARCHAR(255),
-                `created` DATETIME,
-                `password` CHAR(60),
-                `token` CHAR(32))');
-
-        $pdo->query("create table ow_credentials
-            (
-                uid varchar(255) not null,
-                provider varchar(32) not null,
-                user_id int(11) unsigned not null,
-                profile text null,
-                modified datetime null,
-                primary key (uid, provider),
-                constraint credentials_ibfk_1
-                    foreign key (user_id) references ow_user (id)
-
-            )");
-
-        self::$auth = new MysqlAuth($pdo, array(
-            'created' => 'created',
-            'token' => 'token'
-        ));
-
-    }
 
     public function setUp()
     {
@@ -137,7 +102,7 @@ class MysqlAuthTest extends PHPUnit_Framework_TestCase
 
         $user = self::$auth->get($account['user_id']);
 
-        $this->assertEquals(1, $user['id']);
+        $this->assertEquals('Test User', $user['name']);
 
         self::$auth->update($account['user_id'], array( 'name' => 'Updated name' ));
 

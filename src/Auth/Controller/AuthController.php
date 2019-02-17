@@ -98,13 +98,13 @@ class AuthController
                 }
 
                 // find user
-                $account = $this->auth->get_credential('local', $form['uid']);
+                $credential = $this->auth->get_credential('local', $form['uid']);
 
-                if(!empty($account['user'])) {
+                if(!empty($credential['user_id'])) {
                     // return new token
-                    return $this->auth->update_token($account['user']['id']);
+                    return $this->auth->update_token($credential['user_id']);
                 } else {
-                    throw new UserException('Account not found', 404);
+                    throw new UserException('Credential not found', 404);
                 }
             }
         }
