@@ -1,5 +1,7 @@
 <?php
 
+if(class_exists('Mysql_TestCase')) return;
+
 include dirname(__DIR__) . '/vendor/autoload.php';
 
 class Mysql_TestCase extends PHPUnit_Framework_TestCase {
