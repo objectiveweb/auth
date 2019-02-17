@@ -8,7 +8,7 @@
 
 #require dirname(__DIR__) . '/vendor/autoload.php';
 
-require __DIR__ . '/Mysql_TestCase.php';
+require_once __DIR__ . '/Mysql_TestCase.php';
 
 use Objectiveweb\Auth\MysqlAuth;
 

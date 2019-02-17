@@ -1,7 +1,5 @@
 <?php
 
-if(class_exists('Mysql_TestCase')) return;
-
 include dirname(__DIR__) . '/vendor/autoload.php';
 
 class Mysql_TestCase extends PHPUnit_Framework_TestCase {
@@ -12,6 +10,7 @@ class Mysql_TestCase extends PHPUnit_Framework_TestCase {
     public static function setUpBeforeClass()
     {
         $pdo = new PDO('mysql:dbname=objectiveweb;host=localhost', 'root', '');
+        #$pdo = new PDO('mysql:dbname=objectiveweb;host=mysql', 'root', 'root');
         $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
         $pdo->exec('drop table if exists ow_credentials');
         $pdo->exec('drop table if exists ow_user');
@@ -38,7 +37,6 @@ class Mysql_TestCase extends PHPUnit_Framework_TestCase {
             )");
 
         try {
-
             self::$auth = new \Objectiveweb\Auth\MysqlAuth($pdo, array(
                 'created' => 'created',
                 'token' => 'token'
