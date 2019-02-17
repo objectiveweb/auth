@@ -58,7 +58,7 @@ class UserController {
         return true;
 	}
 	
-	public function delete($uid) {
-		$this->auth->delete($uid);
+	public function delete($user_id) {
+		$this->auth->delete($user_id);
 	}
 }

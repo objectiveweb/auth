@@ -52,13 +52,13 @@ abstract class Auth
     public function &login($uid, $password)
     {
 
-        $cred = $this->get_credential('local', $uid);
+        $credential = $this->get_credential('local', $uid);
 
-        if (!$cred || empty($cred['user'])) {
+        if (!$credential) {
             throw new Auth\UserException('User does not exist', 404);
         }
 
-        $user = $cred['user'];
+        $user = $this->get($credential['user_id']);
 
         if (\password_verify($password, $user[$this->params['password']])) {
 

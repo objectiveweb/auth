@@ -29,8 +29,8 @@ class MysqlAuth extends \Objectiveweb\Auth
         parent::__construct(array_merge($defaults, $params));
 
         $this->params['table'] = $this->params['prefix'] . $this->params['table'];
-        $this->params['credentials_table'] = $this->params['prefix'] . $this->params['credentials_table'];
         $this->params['with'][$this->params['credentials_table']] = 'user_id';
+        $this->params['credentials_table'] = $this->params['prefix'] . $this->params['credentials_table'];
     }
 
     /**
@@ -113,9 +113,6 @@ class MysqlAuth extends \Objectiveweb\Auth
      */
     public function get($user_id, $key = 'id')
     {
-
-        $key = $key == 'credential' ?
-
         $query = sprintf(/** @lang text */
             "SELECT * FROM `%s` where `%s` = %s",
             $this->params['table'],
@@ -135,7 +132,7 @@ class MysqlAuth extends \Objectiveweb\Auth
             foreach ($this->params['with'] as $table => $fk) {
                 $query = sprintf(/** @lang text */
                     "SELECT * FROM `%s` where `%s` = %s",
-                    $table,
+                    $this->params['prefix'] . $table,
                     $fk,
                     $user[$this->params['id']]
                 );
@@ -184,12 +181,10 @@ class MysqlAuth extends \Objectiveweb\Auth
         $provider = empty($data['provider']) ? 'local' : $data['provider'];
         unset($data['provider']);
 
-        $user = $this->get_credential($provider, $uid);
+        $credential = $this->get_credential($provider, $uid);
 
-        if (!empty($user)) {
-            $ex = new UserException('User already registered', 409);
-            $ex->setUser($user['user']);
-            throw $ex;
+        if (!empty($credential)) {
+            throw new UserException('User already registered', 409);
         }
 
         $profile = !empty($data['profile']) ? json_encode($data['profile']) : null;
@@ -460,12 +455,6 @@ class MysqlAuth extends \Objectiveweb\Auth
         if ($account = $stmt->fetch(PDO::FETCH_ASSOC)) {
             if (!empty($account['profile'])) {
                 $account['profile'] = json_decode($account['profile'], true);
-            }
-
-            if (!empty($account['user_id'])) {
-                $account['user'] = $this->get($account['user_id']);
-            } else {
-                $account['user'] = null;
             }
 
             return $account;
