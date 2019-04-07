@@ -22,7 +22,7 @@ class MysqlAuth extends \Objectiveweb\Auth
             'prefix' => 'ow_',
             'created' => NULL,
             'last_login' => NULL,
-            'credentials_table' => 'credentials',
+            'credentials_table' => 'user_credentials',
             'with' => []
         ];
 
@@ -148,6 +148,9 @@ class MysqlAuth extends \Objectiveweb\Auth
                 $user[$table] = $stmt->fetchAll(PDO::FETCH_ASSOC);
             }
 
+            if(!empty($user['scopes'])) {
+                $user['scopes'] = explode(',', $user['scopes']);
+            }
             return $user;
         } else {
             throw new UserException('User not found', 404);
@@ -184,7 +187,9 @@ class MysqlAuth extends \Objectiveweb\Auth
         $credential = $this->get_credential($provider, $uid);
 
         if (!empty($credential)) {
-            throw new UserException('User already registered', 409);
+            $ex = new UserException('User already registered', 409);
+            $ex->setUser($this->get($credential['user_id']));
+            throw $ex;
         }
 
         $profile = !empty($data['profile']) ? json_encode($data['profile']) : null;
@@ -207,6 +212,13 @@ class MysqlAuth extends \Objectiveweb\Auth
             $fields[$this->params['created']] = date('Y-m-d H:i:s');
         }
 
+//        if (!empty($fields[$this->params['scopes']])) {
+//            if(is_array($fields[$this->params['scopes']])) {
+//                $fields[$this->params['scopes']] = implode(",", $data[$this->params['scopes']]);
+//            }
+//        } else {
+        //$fields[$this->params['scopes']] = "";
+//        }
         $this->pdo->beginTransaction();
 
         $stmt = $this->pdo->prepare("INSERT INTO " . $this->params['table']
@@ -221,9 +233,7 @@ class MysqlAuth extends \Objectiveweb\Auth
             $fields[$this->params['id']] = $this->pdo->lastInsertId();
             unset($fields[$this->params['created']]);
             unset($fields[$this->params['password']]);
-            if (!empty($fields[$this->params['scopes']])) {
-                $fields['params']['scopes'] = explode(",", $fields[$this->params['scopes']]);
-            }
+
         } else {
             $this->pdo->rollBack();
             $errorInfo = $this->pdo->errorInfo();
@@ -481,8 +491,8 @@ class MysqlAuth extends \Objectiveweb\Auth
         }
 
         $query = sprintf(/** @lang text */
-            "INSERT INTO `%s` (user_id, provider, uid, profile) VALUES (%s, %s, %s, %s)
-        ON DUPLICATE KEY UPDATE profile = VALUES(profile), modified = %s",
+            "INSERT INTO `%s` (user_id, provider, uid, profile, last_login) VALUES (%s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE profile = VALUES(profile), last_login = VALUES(last_login)",
             $this->params['credentials_table'],
             $this->pdo->quote($userid),
             $this->pdo->quote($provider),
