@@ -59,7 +59,7 @@ class OAuthController extends AuthController
 
             $this->login($id, $resourceOwner);
 
-            header("Location: /" );
+            header("Location: /");
 
         }
     }
@@ -70,40 +70,50 @@ class OAuthController extends AuthController
      * @param \League\OAuth2\Client\Provider\ResourceOwnerInterface $resourceOwner
      * @return mixed
      */
-    private function login($provider, $resourceOwner) {
+    private function login($provider, $resourceOwner)
+    {
 
-        // Interface fields
-        $data = [
-            'uid' => $resourceOwner->getId(),
-            'provider' => $provider,
-            'profile' => $resourceOwner->toArray(),
-            'name' => $resourceOwner->getName(),
-            'image' => is_callable([$resourceOwner, 'getAvatar']) ? $resourceOwner->getAvatar() : $resourceOwner->getPictureUrl()
-        ];
+        $uid = $resourceOwner->getId();
+        $email = $resourceOwner->getEmail();
 
-        $data['profile']['email'] = $resourceOwner->getEmail();
+        // check if provider user exists
+        $credential = $this->auth->get_credential($provider, $uid);
 
-        try {
+        if (!$credential && !empty($email)) {
+            $credential = $this->auth->get_credential('local', $email);
+        }
+
+        if (empty($credential['user_id'])) {
+            // Interface fields
+            $data = [
+                'uid' => $uid,
+                'provider' => $provider,
+                'profile' => $resourceOwner->toArray(),
+                'name' => $resourceOwner->getName(),
+                'image' => is_callable([$resourceOwner, 'getAvatar']) ? $resourceOwner->getAvatar() : $resourceOwner->getPictureUrl()
+            ];
+
             $user = $this->auth->register($data);
-        } catch(UserException $ex) {
-            if ($ex->getCode() == 409) {
-                $user = $ex->getUser();
 
-                // Add account to the user
+            if (!empty($email)) {
+                // Add local credential to the user
                 $this->auth->update_credential($user[$this->auth->params['id']],
-                    $provider,
-                    $uid,
-                    $data['profile']);
-            } else {
-                throw $ex;
+                    'local',
+                    $email,
+                    []);
             }
+        } else {
+            $user = $this->auth->get($credential['user_id']);
+            // Add account to the user
+            $this->auth->update_credential($credential['user_id'],
+                $provider,
+                $uid,
+                $resourceOwner->toArray());
         }
 
         // Set session
         $this->auth->user($user);
 
         return $user;
-
     }
-
 }

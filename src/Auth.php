@@ -204,7 +204,6 @@ abstract class Auth
      * @param $provider String provider
      * @param $userid String user_id
      * @return mixed account data or null if account not found
-     *    MUST include the 'user' key with the associated user (can be NULL)
      * @throws \Exception
      */
     abstract public function get_credential($provider, $accountid);

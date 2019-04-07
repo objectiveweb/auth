@@ -85,4 +85,9 @@ trait AclTrait {
         }
 
     }
+
+    function user_can($scope)
+    {
+        return in_array($scope, $this->user['scopes']);
+    }
 }
