@@ -35,7 +35,7 @@ class OAuthController extends AuthController
         $config = $this->providers[$id];
 
         $config['redirectUri'] =
-            (empty($_SERVER['X_FORWARDED_PROTO']) ? $_SERVER['REQUEST_SCHEME'] : $_SERVER['X_FORWARDED_PROTO'])
+            (empty($_SERVER['HTTP_X_FORWARDED_PROTO']) ? $_SERVER['REQUEST_SCHEME'] : $_SERVER['HTTP_X_FORWARDED_PROTO'])
             . "://{$_SERVER['HTTP_HOST']}{$_SERVER['PHP_SELF']}";
 
         $classname = "\\League\\OAuth2\\Client\\Provider\\" . ucfirst($id);
