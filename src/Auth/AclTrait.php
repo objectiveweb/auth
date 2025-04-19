@@ -81,7 +81,7 @@ trait AclTrait {
         }
 
         if(count(array_intersect($perms, $scopes)) == 0) {
-            throw new AuthException("Forbidden", 403);
+            throw new AuthException("Forbidden", $scopes[0] == 'anon' ? 401 : 403);
         }
 
     }
