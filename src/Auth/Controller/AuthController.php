@@ -25,7 +25,7 @@ class AuthController
             '*' => Auth::ANONYMOUS,
             'get' => Auth::ALL,
             'callback' => Auth::ALL,
-            'index' => Auth::AUTHENTICATED,
+            'index' => Auth::ALL,
             'getLogout' => Auth::AUTHENTICATED
         ]);
 
@@ -39,6 +39,8 @@ class AuthController
     function getLogout()
     {
         $this->auth->logout();
+
+        return [];
     }
 
     /**
@@ -46,7 +48,6 @@ class AuthController
      */
     function post(array $user)
     {
-
         $uid = $user['uid'];
         unset($user['uid']);
         $password = $user[$this->auth->params['password']];
@@ -100,7 +101,7 @@ class AuthController
                 // find user
                 $credential = $this->auth->get_credential('local', $form['uid']);
 
-                if(!empty($credential['user_id'])) {
+                if (!empty($credential['user_id'])) {
                     // return new token
                     return $this->auth->update_token($credential['user_id']);
                 } else {
