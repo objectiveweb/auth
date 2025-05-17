@@ -8,7 +8,7 @@ use PDO;
 class MysqlAuth extends \Objectiveweb\Auth
 {
 
-    public $params;
+    public array $params;
 
     /** @var \PDO */
     private $pdo;
@@ -148,7 +148,7 @@ class MysqlAuth extends \Objectiveweb\Auth
                 $user[$table] = $stmt->fetchAll(PDO::FETCH_ASSOC);
             }
 
-            if(!empty($user['scopes'])) {
+            if (!empty($user['scopes'])) {
                 $user['scopes'] = explode(',', $user['scopes']);
             }
             return $user;
@@ -187,13 +187,28 @@ class MysqlAuth extends \Objectiveweb\Auth
         $credential = $this->get_credential($provider, $uid);
 
         if (!empty($credential)) {
-            $ex = new UserException('User already registered', 409);
+            $ex = new UserException('Email já registrado', 409);
             $ex->setUser($this->get($credential['user_id']));
             throw $ex;
         }
 
+        if (empty($data['name'])) {
+            // set $data['name'] to first part of email stored in $uid
+            list($data['name'],) = explode('@', $uid);
+        }
+
         $profile = !empty($data['profile']) ? json_encode($data['profile']) : null;
         unset($data['profile']);
+
+
+        $with = [];
+        foreach ($this->params['with'] as $k => $v) {
+            if (!empty($data[$k])) {
+                $with[$k] = &$data[$k];
+
+                unset($data[$k]);
+            }
+        }
 
         // escape and encode fields
         foreach ($data as $k => $v) {
@@ -212,18 +227,20 @@ class MysqlAuth extends \Objectiveweb\Auth
             $fields[$this->params['created']] = date('Y-m-d H:i:s');
         }
 
-//        if (!empty($fields[$this->params['scopes']])) {
-//            if(is_array($fields[$this->params['scopes']])) {
-//                $fields[$this->params['scopes']] = implode(",", $data[$this->params['scopes']]);
-//            }
-//        } else {
-        //$fields[$this->params['scopes']] = "";
-//        }
+        if (!empty($fields[$this->params['scopes']])) {
+            if (is_array($fields[$this->params['scopes']])) {
+                $fields[$this->params['scopes']] = implode(",", $data[$this->params['scopes']]);
+            }
+        } else {
+            $fields[$this->params['scopes']] = "";
+        }
+
+
         $this->pdo->beginTransaction();
 
         $stmt = $this->pdo->prepare("INSERT INTO " . $this->params['table']
-            . " (" . implode(array_keys($fields), ", ")
-            . ") VALUES (:" . implode(array_keys($fields), ", :") . ");");
+            . " (" . implode(", ", array_keys($fields))
+            . ") VALUES (:" . implode(", :", array_keys($fields)) . ");");
 
         foreach ($fields as $k => $v) {
             $stmt->bindValue(":" . $k, $v);
@@ -245,6 +262,31 @@ class MysqlAuth extends \Objectiveweb\Auth
             }
         }
 
+        foreach ($with as $with_table => $with_content) {
+
+            $with_fields = array_keys($with_content);
+
+            $stmt = $this->pdo->prepare(sprintf("INSERT INTO %s (%s) VALUES (%s)",
+                $this->params['prefix'] . $with_table,
+                $this->params['with'][$with_table] . ',' . implode(',', $with_fields),
+                ':' . $this->params['with'][$with_table] . ',:' . implode(',:', $with_fields)
+            ));
+
+            // fk
+            $stmt->bindValue(':' . $this->params['with'][$with_table], $fields[$this->params['id']]);
+
+            // additional fields
+            foreach ($with_content as $with_k => $with_v) {
+                $stmt->bindValue(':' . $with_k, $with_v);
+            }
+
+            if (!$stmt->execute()) {
+                $this->pdo->rollBack();
+                $errorInfo = $this->pdo->errorInfo();
+                throw new \Exception($errorInfo[2]);
+            }
+        }
+
         $stmt = $this->pdo->prepare("INSERT INTO `{$this->params['credentials_table']}` 
             (user_id, provider, uid, profile) VALUES (:user_id, :provider, :uid, :profile)");
         $stmt->bindValue(':user_id', $fields[$this->params['id']]);
@@ -260,6 +302,7 @@ class MysqlAuth extends \Objectiveweb\Auth
             $errorInfo = $this->pdo->errorInfo();
             throw new \Exception($errorInfo[2]);
         }
+
     }
 
     /**

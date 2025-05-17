@@ -10,16 +10,20 @@ abstract class Auth
     const AUTHENTICATED = ['auth'];
     const ALL = ['anon', 'auth'];
 
-    public $params;
+    public array $params;
 
-    function __construct($params)
+    public static array $user;
+
+    function __construct(array $params)
     {
         $defaults = [
             'session_key' => 'ow_auth',
             'id' => 'id',
             'password' => 'password',
             'scopes' => 'scopes',
-            'token' => NULL
+            'token' => NULL, // Name of the field that should store user tokens
+            'register_scope' => Auth::ANONYMOUS, // who is allowed to use /register
+            'register_callback' => null
         ];
 
         $this->params = array_merge($defaults, $params);
