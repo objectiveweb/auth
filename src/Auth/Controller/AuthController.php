@@ -26,6 +26,9 @@ class AuthController
             'get' => Auth::ALL,
             'callback' => Auth::ALL,
             'index' => Auth::ALL,
+            'postPassword' => Auth::ALL,
+            'postToken' => Auth::ALL,
+            'postRegister' => $auth->params['register_scope'],
             'getLogout' => Auth::AUTHENTICATED
         ]);
 
@@ -36,9 +39,14 @@ class AuthController
         return $this->user;
     }
 
-    function getLogout()
+    function getLogout($params = [])
     {
         $this->auth->logout();
+
+        if (!empty($params['redirect'])) {
+            header("Location: {$params['redirect']}");
+            exit;
+        }
 
         return [];
     }
@@ -67,50 +75,67 @@ class AuthController
         $password = @$user[$this->auth->params['password']];
         unset($user[$this->auth->params['password']]);
 
+        if (!filter_var($uid, FILTER_VALIDATE_EMAIL)) {
+            throw new AuthException('Email inválido');
+        }
+
         $user = $this->auth->register($uid, $password, $user);
+
+        $user['uid'] = $uid;
+
+        if (is_callable($this->auth->params['register_callback'])) {
+            call_user_func($this->auth->params['register_callback'], $user);
+        }
 
         return $user;
     }
 
+    function postToken(array $form)
+    {
+        if (empty($form['token'])) {
+            throw new UserException('Invalid request', 400);
+        }
+
+        if (empty($form['password']) || $form['password'] != @$form['confirm']) {
+            throw new UserException('Passwords don\'t match', 400);
+        }
+
+        return $this->auth->passwd_reset($form['token'], $form['password']);
+    }
+
     function postPassword(array $form)
     {
+        // if user is logged in, update password
         if ($this->auth->check()) {
             // TODO validar senha anterior
             if (empty($form['password']) || $form['password'] != @$form['confirm']) {
-                throw new AuthException('Passwords dont match', 400);
+                throw new UserException('Passwords dont match', 400);
             }
 
             $user = $this->auth->user();
 
             return $this->auth->passwd($user[$this->auth->params['id']], $form['password']);
-        } else {
-            if (!empty($form['token'])) {
-                if (empty($form['password']) || $form['password'] != @$form['confirm']) {
-                    throw new AuthException('Passwords dont match', 400);
-                }
+        } // Forgot password
+        else {
+            if (empty($form['uid'])) {
+                throw new UserException('Invalid request', 400);
+            }
 
-                $user = $this->auth->passwd_reset($form['token'], $form['password']);
+            // find user
+            $credential = $this->auth->get_credential('local', $form['uid']);
 
-                // set current session and return user
-                return $this->auth->user($user);
-            } else {
-                if (empty($form['uid'])) {
-                    throw new UserException('Invalid request', 400);
-                }
+            if (!empty($credential['user_id'])) {
+                // return new token
+                $credential['token'] = $this->auth->update_token($credential['user_id']);
 
-                // find user
-                $credential = $this->auth->get_credential('local', $form['uid']);
-
-                if (!empty($credential['user_id'])) {
-                    // return new token
-                    return $this->auth->update_token($credential['user_id']);
+                if (is_callable($this->auth->params['token_callback'])) {
+                    return call_user_func($this->auth->params['token_callback'], $credential);
                 } else {
-                    throw new UserException('Credential not found', 404);
+                    return $credential;
                 }
+            } else {
+                throw new UserException('Credential not found', 404);
             }
         }
-
     }
-
-
 }

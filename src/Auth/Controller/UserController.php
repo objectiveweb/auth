@@ -2,6 +2,8 @@
 
 namespace Objectiveweb\Auth\Controller;
 
+use Objectiveweb\Auth;
+use Objectiveweb\Auth\AclTrait;
 use Objectiveweb\Auth\UserException;
 
 /**
@@ -13,10 +15,12 @@ use Objectiveweb\Auth\UserException;
 class UserController {
 
     /** @var  \Objectiveweb\Auth */
-	private $auth;
+	use AclTrait;
 	
 	public function __construct(\Objectiveweb\Auth $auth) {
-		$this->auth = $auth;	
+		$this->aclSetup($auth, [
+            '*' => ['ADMIN']
+        ]);
 	}
 	
 	public function index() {
@@ -37,7 +41,6 @@ class UserController {
 		return $this->auth->register($data);
 		
 	}
-
 
 	public function put($user_id, $data) {
 
