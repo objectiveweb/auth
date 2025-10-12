@@ -3,7 +3,7 @@
 namespace Objectiveweb\Auth\Controller;
 
 use Objectiveweb\Auth;
-use Objectiveweb\Auth\AclTrait;
+use Objectiveweb\Auth\Attributes\RequireRole;
 use Objectiveweb\Auth\UserException;
 
 /**
@@ -12,56 +12,55 @@ use Objectiveweb\Auth\UserException;
  *
  * @package Objectiveweb\Auth
  */
-class UserController {
+#[RequireRole('ADMIN')]
+class UserController
+{
 
-    /** @var  \Objectiveweb\Auth */
-	use AclTrait;
-	
-	public function __construct(\Objectiveweb\Auth $auth) {
-		$this->aclSetup($auth, [
-            '*' => ['ADMIN']
-        ]);
-	}
-	
-	public function index() {
-		return $this->get();
-	}
+    public Auth $auth;
 
-	public function get($params = array()) {
-		if(is_array($params)) {
+    public function index()
+    {
+        return $this->get();
+    }
+
+    public function get($params = array())
+    {
+        if (is_array($params)) {
             return $this->auth->query($params);
-        }
-        else {
+        } else {
             return $this->auth->get($params);
         }
-	}
-	
-	public function post($data) {
-				
-		return $this->auth->register($data);
-		
-	}
+    }
 
-	public function put($user_id, $data) {
+    public function post($data)
+    {
 
-	    $user = $this->auth->get($user_id);
+        return $this->auth->register($data);
 
-	    if(!$user) {
-	        throw new UserException('User does not exist', 404);
+    }
+
+    public function put($user_id, $data)
+    {
+
+        $user = $this->auth->get($user_id);
+
+        if (!$user) {
+            throw new UserException('User does not exist', 404);
         }
 
-        if(!empty($data['password'])) {
+        if (!empty($data['password'])) {
             $this->auth->passwd($user[$this->auth->params['id']], $data['password']);
         }
 
         unset($data['password']);
 
-		$this->auth->update($user[$this->auth->params['id']], $data);
+        $this->auth->update($user[$this->auth->params['id']], $data);
 
         return true;
-	}
-	
-	public function delete($user_id) {
-		$this->auth->delete($user_id);
-	}
+    }
+
+    public function delete($user_id)
+    {
+        $this->auth->delete($user_id);
+    }
 }

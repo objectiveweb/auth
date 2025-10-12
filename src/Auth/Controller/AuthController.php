@@ -4,9 +4,9 @@ namespace Objectiveweb\Auth\Controller;
 
 use Objectiveweb\Auth;
 
-use Objectiveweb\Auth\AclTrait;
 use Objectiveweb\Auth\AuthException;
 use Objectiveweb\Auth\UserException;
+use Objectiveweb\Auth\Attributes\RequireRole;
 
 /**
  * Class AuthController
@@ -15,30 +15,20 @@ use Objectiveweb\Auth\UserException;
  *
  * @package Objectiveweb\Auth
  */
+#[RequireRole(Auth::ANONYMOUS)]
 class AuthController
 {
-    use AclTrait;
-
-    function __construct(\Objectiveweb\Auth $auth)
+    function __construct(public \Objectiveweb\Auth $auth)
     {
-        $this->aclSetup($auth, [
-            '*' => Auth::ANONYMOUS,
-            'get' => Auth::ALL,
-            'callback' => Auth::ALL,
-            'index' => Auth::ALL,
-            'postPassword' => Auth::ALL,
-            'postToken' => Auth::ALL,
-            'postRegister' => $auth->params['register_scope'],
-            'getLogout' => Auth::AUTHENTICATED
-        ]);
-
     }
 
+    #[RequireRole(Auth::ALL)]
     function index()
     {
-        return $this->user;
+        return $this->auth->user();
     }
 
+    #[RequireRole(Auth::AUTHENTICATED)]
     function getLogout($params = [])
     {
         $this->auth->logout();
@@ -90,6 +80,7 @@ class AuthController
         return $user;
     }
 
+    #[RequireRole(Auth::ALL)]
     function postToken(array $form)
     {
         if (empty($form['token'])) {
@@ -103,6 +94,7 @@ class AuthController
         return $this->auth->passwd_reset($form['token'], $form['password']);
     }
 
+    #[RequireRole(Auth::ALL)]
     function postPassword(array $form)
     {
         // if user is logged in, update password
