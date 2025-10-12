@@ -12,7 +12,7 @@ use Objectiveweb\Auth\UserException;
  *
  * @package Objectiveweb\Auth
  */
-#[RequireRole('ADMIN')]
+#[RequireRole(['ADMIN'])]
 class UserController
 {
 
