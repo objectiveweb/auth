@@ -25,7 +25,12 @@ class AuthController
     #[RequireRole(Auth::ALL)]
     function index()
     {
-        return $this->auth->user();
+        if($this->auth->check()){
+            return $this->auth->user();
+        }
+        else {
+            return null;
+        }
     }
 
     #[RequireRole(Auth::AUTHENTICATED)]
