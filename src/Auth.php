@@ -12,8 +12,6 @@ abstract class Auth
 
     public array $params;
 
-    public static array $user;
-
     function __construct(array $params)
     {
         $defaults = [
