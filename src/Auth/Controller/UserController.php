@@ -3,8 +3,9 @@
 namespace Objectiveweb\Auth\Controller;
 
 use Objectiveweb\Auth;
-use Objectiveweb\Auth\Attributes\RequireRole;
+use Objectiveweb\Auth\Middleware\RequireRole;
 use Objectiveweb\Auth\UserException;
+use Objectiveweb\Router\Middleware;
 
 /**
  * Class UserController
@@ -12,7 +13,7 @@ use Objectiveweb\Auth\UserException;
  *
  * @package Objectiveweb\Auth
  */
-#[RequireRole(['ADMIN'])]
+#[Middleware(RequireRole::class, ['ADMIN'])]
 class UserController
 {
 

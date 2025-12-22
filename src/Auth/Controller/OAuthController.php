@@ -5,7 +5,8 @@ namespace Objectiveweb\Auth\Controller;
 use Objectiveweb\Auth;
 use Objectiveweb\Auth\UserException;
 
-use Objectiveweb\Auth\Attributes\RequireRole;
+use Objectiveweb\Auth\Middleware\RequireRole;
+use Objectiveweb\Router\Middleware;
 
 /**
  * Class OAuthController
@@ -28,7 +29,7 @@ class OAuthController extends AuthController
     /**
      * Execute login on oauth provider
      */
-    #[RequireRole(Auth::ALL)]
+    #[Middleware(RequireRole::class, Auth::ALL)]
     function get($id, $query)
     {
         if (!isset($this->providers[$id])) {
