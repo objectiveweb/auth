@@ -1,15 +1,13 @@
 <?php
 
-namespace Objectiveweb\Auth\Attributes;
+namespace Objectiveweb\Auth\Middleware;
 
 use Objectiveweb\Auth;
 use Objectiveweb\Auth\AuthException;
-use Objectiveweb\Router\Middleware;
 
-use Attribute;
+use Objectiveweb\Router\MiddlewareInterface;
 
-#[Attribute(Attribute::TARGET_CLASS | Attribute::TARGET_METHOD)]
-class RequireRole extends Middleware
+class RequireRole implements MiddlewareInterface
 {
 
     public function __construct(private Auth $auth, private string|array $role)
@@ -17,7 +15,7 @@ class RequireRole extends Middleware
         $this->role = is_array($role) ? $role : [$role];
     }
 
-    public function after($method, $fn, $params, $response): mixed
+    public function after(string $method, string $fn, array $params, array|null $response): mixed
     {
         if ($this->auth->check() && is_array($response) && !isset($response['_user'])) {
             $response['_user'] = $this->auth->user();
@@ -26,7 +24,7 @@ class RequireRole extends Middleware
         return $response;
     }
 
-    public function before($method, $fn, $params): mixed
+    public function before(string $method, string $fn, array $params): mixed
     {
         if ($this->auth->check()) {
             $scopes = \Objectiveweb\Auth::AUTHENTICATED;
