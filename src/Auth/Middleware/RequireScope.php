@@ -7,12 +7,12 @@ use Objectiveweb\Auth\AuthException;
 
 use Objectiveweb\Router\MiddlewareInterface;
 
-class RequireRole implements MiddlewareInterface
+class RequireScope implements MiddlewareInterface
 {
 
-    public function __construct(private Auth $auth, private string|array $role)
+    public function __construct(private Auth $auth, private string|array $scopes)
     {
-        $this->role = is_array($role) ? $role : [$role];
+        $this->scopes = is_array($scopes) ? $scopes : [$scopes];
     }
 
     public function after(string $method, string $fn, array $params, array|null $response): mixed
@@ -38,7 +38,7 @@ class RequireRole implements MiddlewareInterface
             $scopes = \Objectiveweb\Auth::ANONYMOUS;
         }
 
-        if (count(array_intersect($this->role, $scopes)) == 0) {
+        if (count(array_intersect($this->scopes, $scopes)) == 0) {
             throw new AuthException("Forbidden", $scopes[0] == 'anon' ? 401 : 403);
         }
 

@@ -6,7 +6,7 @@ use Objectiveweb\Auth;
 
 use Objectiveweb\Auth\AuthException;
 use Objectiveweb\Auth\UserException;
-use Objectiveweb\Auth\Middleware\RequireRole;
+use Objectiveweb\Auth\Middleware\RequireScope;
 
 use Objectiveweb\Router\Middleware;
 
@@ -17,14 +17,14 @@ use Objectiveweb\Router\Middleware;
  *
  * @package Objectiveweb\Auth
  */
-#[Middleware(RequireRole::class, Auth::ANONYMOUS)]
+#[Middleware(RequireScope::class, Auth::ANONYMOUS)]
 class AuthController
 {
     function __construct(public \Objectiveweb\Auth $auth)
     {
     }
 
-    #[Middleware(RequireRole::class, Auth::ALL)]
+    #[Middleware(RequireScope::class, Auth::ALL)]
     function index()
     {
         if($this->auth->check()){
@@ -35,7 +35,7 @@ class AuthController
         }
     }
 
-    #[Middleware(RequireRole::class, Auth::AUTHENTICATED)]
+    #[Middleware(RequireScope::class, Auth::AUTHENTICATED)]
     function getLogout($params = [])
     {
         $this->auth->logout();
@@ -87,7 +87,7 @@ class AuthController
         return $user;
     }
 
-    #[Middleware(RequireRole::class, Auth::ALL)]
+    #[Middleware(RequireScope::class, Auth::ALL)]
     function postToken(array $form)
     {
         if (empty($form['token'])) {
@@ -101,7 +101,7 @@ class AuthController
         return $this->auth->passwd_reset($form['token'], $form['password']);
     }
 
-    #[Middleware(RequireRole::class, Auth::ALL)]
+    #[Middleware(RequireScope::class, Auth::ALL)]
     function postPassword(array $form)
     {
         // if user is logged in, update password
