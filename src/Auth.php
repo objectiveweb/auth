@@ -45,7 +45,12 @@ abstract class Auth
         return !empty($_SESSION[$this->params['session_key']]);
     }
 
-    public function user_can($scope) {
+    public function user_can($scope): bool
+    {
+        if(!$this->check()) {
+            return false;
+        }
+
         $user = $this->user();
 
         return in_array($scope, $user['scopes']);
