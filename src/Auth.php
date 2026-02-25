@@ -19,6 +19,7 @@ abstract class Auth
             'id' => 'id',
             'password' => 'password',
             'scopes' => 'scopes',
+            'roles' => 'roles',
             'token' => NULL, // Name of the field that should store user tokens
             'register_scope' => Auth::ANONYMOUS, // who is allowed to use /register
             'register_callback' => null
@@ -52,8 +53,20 @@ abstract class Auth
         }
 
         $user = $this->user();
+        $grants = [];
 
-        return in_array($scope, $user['scopes']);
+        $scopeField = $this->params['scopes'] ?? 'scopes';
+        if (!empty($user[$scopeField])) {
+            $grants = is_array($user[$scopeField]) ? $user[$scopeField] : explode(',', (string) $user[$scopeField]);
+        }
+
+        $roleField = $this->params['roles'] ?? 'roles';
+        if (!empty($user[$roleField])) {
+            $roles = is_array($user[$roleField]) ? $user[$roleField] : explode(',', (string) $user[$roleField]);
+            $grants = array_merge($grants, $roles);
+        }
+
+        return in_array($scope, array_values(array_unique(array_filter($grants))), true);
     }
 
     /**

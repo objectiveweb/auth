@@ -27,6 +27,7 @@ class UserController
             'name',
             'image',
             $this->auth->params['scopes'] ?? 'scopes',
+            $this->auth->params['roles'] ?? 'roles',
             $this->auth->params['created'] ?? null,
         ])));
 
@@ -36,6 +37,7 @@ class UserController
             'name',
             'image',
             $this->auth->params['scopes'] ?? 'scopes',
+            $this->auth->params['roles'] ?? 'roles',
             'provider',
             'profile',
         ])));

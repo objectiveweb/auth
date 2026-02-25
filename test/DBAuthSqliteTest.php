@@ -41,12 +41,30 @@ class DBAuthSqliteTest extends TestCase
             )'
         )->exec();
 
+        self::$db->query(
+            'CREATE TABLE auth_role (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE
+            )'
+        )->exec();
+
+        self::$db->query(
+            'CREATE TABLE auth_user_role (
+                user_id INTEGER NOT NULL,
+                role_id INTEGER NOT NULL,
+                PRIMARY KEY(user_id, role_id)
+            )'
+        )->exec();
+
         self::$auth = new DBAuth(self::$db, [
             'table' => 'auth_user',
             'credentials_table' => 'auth_credentials',
             'created' => 'created',
             'token' => 'token',
             'credentials_last_login' => 'last_login',
+            'roles' => 'roles',
+            'roles_table' => 'auth_role',
+            'user_roles_table' => 'auth_user_role',
         ]);
     }
 
@@ -54,6 +72,8 @@ class DBAuthSqliteTest extends TestCase
     {
         $_SESSION = [];
         self::$db->query('DELETE FROM auth_credentials')->exec();
+        self::$db->query('DELETE FROM auth_user_role')->exec();
+        self::$db->query('DELETE FROM auth_role')->exec();
         self::$db->query('DELETE FROM auth_user')->exec();
     }
 
@@ -162,5 +182,35 @@ class DBAuthSqliteTest extends TestCase
 
         self::$auth->delete($account['user_id']);
         self::$auth->login('alice@example.com', 'secret');
+    }
+
+    public function testUserCanChecksScopesAndRoles(): void
+    {
+        self::$auth->register('scoped@example.com', 'secret', [
+            'scopes' => ['profile:read'],
+            'roles' => ['admin'],
+        ]);
+
+        self::$auth->login('scoped@example.com', 'secret');
+
+        $this->assertTrue(self::$auth->user_can('profile:read'));
+        $this->assertTrue(self::$auth->user_can('admin'));
+        $this->assertFalse(self::$auth->user_can('operator'));
+
+        $current = self::$auth->user();
+        $this->assertSame(['admin'], $current['roles']);
+        $this->assertSame(['profile:read'], $current['scopes']);
+    }
+
+    public function testUpdateRolesReplacesAssignments(): void
+    {
+        $user = self::$auth->register('roles@example.com', 'secret', [
+            'roles' => ['partner'],
+        ]);
+
+        self::$auth->update($user['id'], ['roles' => ['operator', 'admin']]);
+        $reloaded = self::$auth->get($user['id']);
+
+        $this->assertSame(['admin', 'operator'], $reloaded['roles']);
     }
 }

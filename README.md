@@ -1,4 +1,4 @@
-# objectiveweb/auth
+# objectiveweb/auth [![CI](https://github.com/objectiveweb/auth/actions/workflows/ci.yml/badge.svg)](https://github.com/objectiveweb/auth/actions/workflows/ci.yml)
 
 Authentication library with pluggable providers.
 
@@ -37,10 +37,13 @@ $auth = new DBAuth($db, [
     'id' => 'id',
     'password' => 'password',
     'scopes' => 'scopes',
+    'roles' => 'roles',
     'token' => 'token',
     'created' => 'created',
     'uuid' => 'uuid',
     'credentials_last_login' => 'last_login',
+    'roles_table' => 'auth_role',
+    'user_roles_table' => 'auth_user_role',
 ]);
 ```
 
@@ -72,6 +75,17 @@ CREATE TABLE auth_credentials (
     last_login TEXT NULL,
     PRIMARY KEY(uid, provider)
 );
+
+CREATE TABLE auth_role (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE auth_user_role (
+    user_id INTEGER NOT NULL,
+    role_id INTEGER NOT NULL,
+    PRIMARY KEY(user_id, role_id)
+);
 ```
 
 #### DBAuth params
@@ -80,9 +94,16 @@ CREATE TABLE auth_credentials (
 - `id`: user PK field (default `id`)
 - `password`: password field (default `password`)
 - `scopes`: scopes field (default `scopes`)
+- `roles`: roles field attached to the user payload (default `roles`)
 - `token`: optional password-reset token field
 - `table`: users table name (default `user`)
 - `credentials_table`: credentials table name (default `user_credentials`)
+- `roles_table`: optional roles table name (default `null`)
+- `user_roles_table`: optional user-role mapping table name (default `null`)
+- `user_roles_user_id`: user FK column in mapping table (default `user_id`)
+- `user_roles_role_id`: role FK column in mapping table (default `role_id`)
+- `role_id`: role PK column in `roles_table` (default `id`)
+- `role_name`: role name column in `roles_table` (default `name`)
 - `created`: optional created-at field
 - `last_login`: optional user last-login field
 - `credentials_last_login`: optional credentials last-login field
@@ -176,3 +197,4 @@ Included:
 - `OAuthController`
 - `UserController`
 - `RequireScope` middleware
+- `RequireRole` middleware
