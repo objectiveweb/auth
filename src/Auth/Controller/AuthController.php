@@ -53,10 +53,17 @@ class AuthController
      */
     function post(array $user)
     {
-        $uid = $user['uid'];
+        $uid = trim((string) ($user['uid'] ?? ''));
+        if ($uid === '') {
+            throw new UserException('Missing uid', 400);
+        }
         unset($user['uid']);
-        $password = $user[$this->auth->params['password']];
-        unset($user[$this->auth->params['password']]);
+        $passwordField = $this->auth->params['password'];
+        $password = $user[$passwordField] ?? null;
+        if (!is_string($password) || $password === '') {
+            throw new UserException('Missing password', 400);
+        }
+        unset($user[$passwordField]);
 
         return $this->auth->login($uid, $password);
     }
@@ -67,10 +74,14 @@ class AuthController
      */
     function postRegister(array $user)
     {
-        $uid = @$user['uid'];
+        $uid = trim((string) ($user['uid'] ?? ''));
+        if ($uid === '') {
+            throw new UserException('Missing uid', 400);
+        }
         unset($user['uid']);
-        $password = @$user[$this->auth->params['password']];
-        unset($user[$this->auth->params['password']]);
+        $passwordField = $this->auth->params['password'];
+        $password = $user[$passwordField] ?? null;
+        unset($user[$passwordField]);
 
         if (!filter_var($uid, FILTER_VALIDATE_EMAIL)) {
             throw new AuthException('Email inválido');
@@ -94,7 +105,8 @@ class AuthController
             throw new UserException('Invalid request', 400);
         }
 
-        if (empty($form['password']) || $form['password'] != @$form['confirm']) {
+        $confirm = $form['confirm'] ?? null;
+        if (empty($form['password']) || $form['password'] != $confirm) {
             throw new UserException('Passwords don\'t match', 400);
         }
 
@@ -107,7 +119,8 @@ class AuthController
         // if user is logged in, update password
         if ($this->auth->check()) {
             // TODO validar senha anterior
-            if (empty($form['password']) || $form['password'] != @$form['confirm']) {
+            $confirm = $form['confirm'] ?? null;
+            if (empty($form['password']) || $form['password'] != $confirm) {
                 throw new UserException('Passwords dont match', 400);
             }
 
