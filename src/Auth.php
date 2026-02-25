@@ -29,9 +29,9 @@ abstract class Auth
 
     public static function hash($password = null)
     {
-        if (!$password) {
+        if ($password === null) {
             // return a random token
-            return md5(microtime(true));
+            return bin2hex(random_bytes(16));
         }
 
         return \password_hash($password, PASSWORD_BCRYPT);

@@ -11,7 +11,8 @@
     "issues" : "https://github.com/objetiveweb/auth/issues"
   },
   "require": {
-    "php": ">=8.2.0"
+    "php": ">=8.2.0",
+    "objectiveweb/db": "dev-devel"
   },
   "require-dev": {
     "phpunit/phpunit": "10.*"

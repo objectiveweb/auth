@@ -101,7 +101,7 @@ class OAuthController extends AuthController
                 $user = $this->auth->user();
 
                 // Add the oauth cred to the existing user
-                $this->auth->update_credential($user['id'],
+                $this->auth->update_credential($user[$this->auth->params['id']],
                     $provider,
                     $uid,
                     $resourceOwner->toArray());
