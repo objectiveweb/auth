@@ -1,136 +1,178 @@
-# Auth [![Build Status](https://travis-ci.org/objectiveweb/auth.svg?branch=master)](https://travis-ci.org/objectiveweb/auth)
+# objectiveweb/auth
 
-Authentication Library 
+Authentication library with pluggable providers.
 
-## Setup
+## Install
 
-Setup the auth dependency on your project's composer.json, then run `composer update`
-
-
-       "require": {
-           "objectiveweb/auth": "~0.2"
-       }
-
-Or use the command line
-
+```bash
+composer require objectiveweb/auth
 ```
-composer require objectiveweb "^0.4"
+
+This package requires:
+- PHP `>=8.2`
+- `objectiveweb/db`
+
+## Providers
+
+### `DBAuth`
+
+`DBAuth` uses `Objectiveweb\DB` and supports:
+- local login with hashed password
+- external credentials (`provider` + `uid`)
+- password reset tokens
+- optional related data inserts (`with`)
+- immutable UUID generation on user creation (default field name: `uuid`)
+
+#### Minimal setup
+
+```php
+use Objectiveweb\Auth\DBAuth;
+use Objectiveweb\DB;
+
+$db = new DB('sqlite:/tmp/app.sqlite'); // or mysql:..., pgsql:...
+
+$auth = new DBAuth($db, [
+    'table' => 'auth_user',
+    'credentials_table' => 'auth_credentials',
+    'id' => 'id',
+    'password' => 'password',
+    'scopes' => 'scopes',
+    'token' => 'token',
+    'created' => 'created',
+    'uuid' => 'uuid',
+    'credentials_last_login' => 'last_login',
+]);
 ```
-### Auth initialization
 
-Create a new $auth instance, passing the appropriate parameters
+#### Required tables
 
-    // MysqlAuth depends on PDO
-    $pdo = new \PDO($dsn);
+`DBAuth` expects:
+- users table (`table`)
+- credentials table (`credentials_table`)
 
-    $auth = new \Objectiveweb\Auth\MysqlAuth($pdo, [
-        'session_key' => 'ow_auth',
-        'table' => 'ow_auth',
-        'id' => 'id',
-        'username' => 'username',
-        'password' => 'password',
-        'token' => NULL,
-        'created' => NULL,
-        'last_login' => NULL
-    ]);
+Example schema (SQLite-compatible):
 
-#### Parameters
-* 'session_key'
+```sql
+CREATE TABLE auth_user (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    uuid TEXT NOT NULL UNIQUE,
+    name TEXT,
+    image TEXT,
+    scopes TEXT,
+    created TEXT,
+    password TEXT,
+    token TEXT
+);
 
-    Key used for $_SESSION storage, defaults to 'ow_auth'
+CREATE TABLE auth_credentials (
+    uid TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    profile TEXT NULL,
+    last_login TEXT NULL,
+    PRIMARY KEY(uid, provider)
+);
+```
 
-* 'table'
+#### DBAuth params
 
-    Database table which stores users, defaults to 'ow_auth'
+- `session_key`: session storage key (default `ow_auth`)
+- `id`: user PK field (default `id`)
+- `password`: password field (default `password`)
+- `scopes`: scopes field (default `scopes`)
+- `token`: optional password-reset token field
+- `table`: users table name (default `user`)
+- `credentials_table`: credentials table name (default `user_credentials`)
+- `created`: optional created-at field
+- `last_login`: optional user last-login field
+- `credentials_last_login`: optional credentials last-login field
+- `uuid`: UUID field created on register and protected from updates (default `uuid`)
+- `with`: associative array for extra related inserts, format: `['table_name' => 'foreign_key']`
 
-* 'id'
+### `BasicAuth`
 
-    Primary key of the user table, defaults to 'id'
+In-memory provider for tests/dev/small setups.
 
-* 'username'
+`BasicAuth` fully implements the provider contract:
+- `query`, `get`, `register`, `login`
+- `passwd`, `passwd_reset`
+- `update`, `delete`
+- `update_token`
+- `get_credential`, `update_credential`
 
-    Username field on the user table, defaults to 'username'
+#### BasicAuth setup
 
-* 'password'
+```php
+use Objectiveweb\Auth\BasicAuth;
 
-    Password field on the user table, defaults to 'password',
+$auth = new BasicAuth(
+    [
+        'admin@example.com' => 'secret',
+    ],
+    [
+        'token' => 'token',
+    ]
+);
+```
 
-* 'token'
+Passwords passed to the constructor/register are hashed internally unless already hashed.
 
-    Optional CHAR(32) field to store a random token
+## Common usage
 
-* 'created'
+```php
+use Objectiveweb\Auth\AuthException;
+use Objectiveweb\Auth\UserException;
 
-    Optional DATETIME field to store the accounts creation date
+// Register
+$user = $auth->register('alice@example.com', 'secret', ['name' => 'Alice']);
 
-* 'last_login'
+// Login
+try {
+    $user = $auth->login('alice@example.com', 'secret');
+} catch (AuthException $e) {
+    // invalid password
+} catch (UserException $e) {
+    // user not found
+}
 
-    Optional DATETIME field to store the last successful login date
+// Session
+if ($auth->check()) {
+    $current = $auth->user();
+}
 
-## Usage
+// Logout
+$auth->logout();
+```
 
-    include "vendor/autoload.php";
-    
-    # register user
-    try {
-        $user = $auth->register('username', 'password');
-    }
-    catch(\Exception $ex) {
-        printf('DB Error creating user: %s', $ex->getMessage());
-    }
+## Password reset flow
 
-    # login user
-    try {
-        $user = $auth->login('username', 'password');
-    }
-    catch(AuthException $ex) {
-        printf("Password mismatch");
-    }
-    catch(UserException $ex) {
-        printf("Error logging in: %s", $ex->getMessage());
-    }
+When `token` is configured:
 
-    # check if the user is logged in
-    if($auth->check()) {
-        // user is logged in
-    }
-    else {
-        // user is not logged in
-    };
+```php
+$credential = $auth->get_credential('local', 'alice@example.com');
+$token = $auth->update_token($credential['user_id']);
 
-    # retrieve the current user from the session
-    try {
-        $user = $auth->user();
-    }
-    catch(UserException $ex) {
-        printf("User not logged in");
-    }
+// Send token, then later:
+$auth->passwd_reset($token, 'new-password');
+```
 
-    # logout user
-    $auth->logout();
+## Query and update
 
-### Store additional data when registering a user
+```php
+// List users (paginated response)
+$result = $auth->query(['page' => 0, 'size' => 20]);
 
-    $user = $auth->register('username', 'password', [
-        'email' => 'someone@somewhere',
-        'displayName' => 'Test User'
-    ]);
+// Update user profile data
+$auth->update($userId, ['name' => 'Alice Updated']);
 
-### Generating a password reset token
+// Update password
+$auth->passwd($userId, 'new-password');
+```
 
-When the `token` parameter is enabled in initialization
+## Controllers and middleware
 
-    $token = $auth->update_token($username);
-
-    // send $token to user, then later
-    try {
-        $auth->passwd_reset($token, $new_password);
-    }
-    catch(UserException $ex) {
-        printf('Invalid token provided');
-    }
-
-### Updating user data
-
-    $auth->update($username, [ 'email' => 'new@email.com' ]);
-
+Included:
+- `AuthController`
+- `OAuthController`
+- `UserController`
+- `RequireScope` middleware
