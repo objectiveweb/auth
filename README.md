@@ -20,7 +20,6 @@ This package requires:
 - local login with hashed password
 - external credentials (`provider` + `uid`)
 - password reset tokens
-- optional related data inserts (`with`)
 - immutable UUID generation on user creation (default field name: `uuid`)
 
 #### Minimal setup
@@ -44,6 +43,23 @@ $auth = new DBAuth($db, [
     'credentials_last_login' => 'last_login',
     'roles_table' => 'auth_role',
     'user_roles_table' => 'auth_user_role',
+    'relations' => [
+        'user' => [
+            'table' => 'user_delegations',
+            'subject_key' => 'user_id',
+            'target_key' => 'target_user_id',
+            'ability_key' => 'ability',
+        ],
+        'item' => [
+            'table' => 'item_users',
+            'subject_key' => 'user_id',
+            'target_key' => 'item_id',
+            'ability_key' => 'ability',
+            'eager' => true // or array of parameters passed to select 
+                            // ['order' => 'item_id DESC', 'fields' => ['a', 'b']]
+
+        ],
+    ],
 ]);
 ```
 
@@ -104,11 +120,12 @@ CREATE TABLE auth_user_role (
 - `user_roles_role_id`: role FK column in mapping table (default `role_id`)
 - `role_id`: role PK column in `roles_table` (default `id`)
 - `role_name`: role name column in `roles_table` (default `name`)
+- `relations`: relationship auth mapping by resource type (default `[]`)
+- `relations.<name>.eager`: eager load related rows into user payload (`true` => `[]`, `array` => select params)
 - `created`: optional created-at field
 - `last_login`: optional user last-login field
 - `credentials_last_login`: optional credentials last-login field
 - `uuid`: UUID field created on register and protected from updates (default `uuid`)
-- `with`: associative array for extra related inserts, format: `['table_name' => 'foreign_key']`
 
 ### `BasicAuth`
 
@@ -188,6 +205,22 @@ $auth->update($userId, ['name' => 'Alice Updated']);
 
 // Update password
 $auth->passwd($userId, 'new-password');
+```
+
+## Authorization checks (`user_can`)
+
+```php
+// Global grants (scopes + roles)
+$auth->user_can('admin'); // bool
+
+// Delegation to a target user (relation type "user")
+$auth->user_can('delegate', 42); // bool
+
+// Permission for a single resource
+$auth->user_can('manage', 'item', 10); // bool
+
+// List resource IDs accessible for an ability
+$auth->user_can('manage', 'item'); // int[]
 ```
 
 ## Controllers and middleware

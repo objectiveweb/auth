@@ -56,6 +56,22 @@ class DBAuthSqliteTest extends TestCase
             )'
         )->exec();
 
+        self::$db->query(
+            'CREATE TABLE user_delegations (
+                user_id INTEGER NOT NULL,
+                target_user_id INTEGER NOT NULL,
+                ability TEXT NOT NULL
+            )'
+        )->exec();
+
+        self::$db->query(
+            'CREATE TABLE item_users (
+                user_id INTEGER NOT NULL,
+                item_id INTEGER NOT NULL,
+                ability TEXT NOT NULL
+            )'
+        )->exec();
+
         self::$auth = new DBAuth(self::$db, [
             'table' => 'auth_user',
             'credentials_table' => 'auth_credentials',
@@ -65,6 +81,20 @@ class DBAuthSqliteTest extends TestCase
             'roles' => 'roles',
             'roles_table' => 'auth_role',
             'user_roles_table' => 'auth_user_role',
+            'relations' => [
+                'user' => [
+                    'table' => 'user_delegations',
+                    'subject_key' => 'user_id',
+                    'target_key' => 'target_user_id',
+                    'ability_key' => 'ability',
+                ],
+                'item' => [
+                    'table' => 'item_users',
+                    'subject_key' => 'user_id',
+                    'target_key' => 'item_id',
+                    'ability_key' => 'ability',
+                ],
+            ],
         ]);
     }
 
@@ -74,6 +104,8 @@ class DBAuthSqliteTest extends TestCase
         self::$db->query('DELETE FROM auth_credentials')->exec();
         self::$db->query('DELETE FROM auth_user_role')->exec();
         self::$db->query('DELETE FROM auth_role')->exec();
+        self::$db->query('DELETE FROM user_delegations')->exec();
+        self::$db->query('DELETE FROM item_users')->exec();
         self::$db->query('DELETE FROM auth_user')->exec();
     }
 
@@ -212,5 +244,212 @@ class DBAuthSqliteTest extends TestCase
         $reloaded = self::$auth->get($user['id']);
 
         $this->assertSame(['admin', 'operator'], $reloaded['roles']);
+    }
+
+    public function testUserCanChecksDelegationForSpecificUser(): void
+    {
+        $actor = self::$auth->register('owner@example.com', 'secret');
+        $target = self::$auth->register('target@example.com', 'secret');
+        self::$auth->login('owner@example.com', 'secret');
+
+        self::$db->insert('user_delegations', [
+            'user_id' => $actor['id'],
+            'target_user_id' => $target['id'],
+            'ability' => 'admin',
+        ]);
+
+        $this->assertTrue(self::$auth->user_can('admin', (int) $target['id']));
+        $this->assertFalse(self::$auth->user_can('manage', (int) $target['id']));
+    }
+
+    public function testUserCanChecksResourceAndListsResourceIds(): void
+    {
+        $actor = self::$auth->register('manager@example.com', 'secret');
+        self::$auth->login('manager@example.com', 'secret');
+
+        self::$db->insert('item_users', [
+            'user_id' => $actor['id'],
+            'item_id' => 10,
+            'ability' => 'manage',
+        ]);
+        self::$db->insert('item_users', [
+            'user_id' => $actor['id'],
+            'item_id' => 3,
+            'ability' => 'manage',
+        ]);
+        self::$db->insert('item_users', [
+            'user_id' => $actor['id'],
+            'item_id' => 3,
+            'ability' => 'manage',
+        ]);
+        self::$db->insert('item_users', [
+            'user_id' => $actor['id'],
+            'item_id' => 12,
+            'ability' => 'view',
+        ]);
+
+        $this->assertTrue(self::$auth->user_can('manage', 'item', 10));
+        $this->assertFalse(self::$auth->user_can('manage', 'item', 12));
+        $this->assertSame([3, 10], self::$auth->user_can('manage', 'item'));
+        $this->assertSame([12], self::$auth->user_can('view', 'item'));
+    }
+
+    public function testUserCanReturnsFalseOrEmptyWhenUnauthenticatedForRelationModes(): void
+    {
+        self::$auth->register('anon@example.com', 'secret');
+        $this->assertFalse(self::$auth->user_can('manage'));
+        $this->assertFalse(self::$auth->user_can('manage', 1));
+        $this->assertFalse(self::$auth->user_can('manage', 'item', 1));
+        $this->assertSame([], self::$auth->user_can('manage', 'item'));
+    }
+
+    public function testUserCanGlobalCheckDoesNotReadRelationshipRows(): void
+    {
+        $actor = self::$auth->register('owner@example.com', 'secret');
+        self::$auth->login('owner@example.com', 'secret');
+
+        self::$db->insert('item_users', [
+            'user_id' => $actor['id'],
+            'item_id' => 10,
+            'ability' => 'admin',
+        ]);
+
+        $this->assertFalse(self::$auth->user_can('admin'));
+        $this->assertTrue(self::$auth->user_can('admin', 'item', 10));
+    }
+
+    public function testUserCanSupportsRoleBasedRelationshipMapping(): void
+    {
+        self::$db->query(
+            'CREATE TABLE IF NOT EXISTS item_members (
+                user_id INTEGER NOT NULL,
+                item_id INTEGER NOT NULL,
+                role TEXT NOT NULL
+            )'
+        )->exec();
+        self::$db->query('DELETE FROM item_members')->exec();
+
+        $roleAuth = new DBAuth(self::$db, [
+            'table' => 'auth_user',
+            'credentials_table' => 'auth_credentials',
+            'created' => 'created',
+            'token' => 'token',
+            'credentials_last_login' => 'last_login',
+            'roles' => 'roles',
+            'roles_table' => 'auth_role',
+            'user_roles_table' => 'auth_user_role',
+            'relations' => [
+                'item' => [
+                    'table' => 'item_members',
+                    'subject_key' => 'user_id',
+                    'target_key' => 'item_id',
+                    'role_key' => 'role',
+                    'role_abilities' => [
+                        'owner' => ['manage', 'view'],
+                        'staff' => ['view'],
+                    ],
+                ],
+            ],
+        ]);
+
+        $actor = $roleAuth->register('rolemap@example.com', 'secret');
+        $roleAuth->login('rolemap@example.com', 'secret');
+
+        self::$db->insert('item_members', [
+            'user_id' => $actor['id'],
+            'item_id' => 20,
+            'role' => 'owner',
+        ]);
+        self::$db->insert('item_members', [
+            'user_id' => $actor['id'],
+            'item_id' => 22,
+            'role' => 'staff',
+        ]);
+
+        $this->assertTrue($roleAuth->user_can('manage', 'item', 20));
+        $this->assertFalse($roleAuth->user_can('manage', 'item', 22));
+        $this->assertSame([20, 22], $roleAuth->user_can('view', 'item'));
+    }
+
+    public function testGetHydratesRelationWithEagerTrue(): void
+    {
+        $eagerAuth = new DBAuth(self::$db, [
+            'table' => 'auth_user',
+            'credentials_table' => 'auth_credentials',
+            'created' => 'created',
+            'token' => 'token',
+            'credentials_last_login' => 'last_login',
+            'roles' => 'roles',
+            'roles_table' => 'auth_role',
+            'user_roles_table' => 'auth_user_role',
+            'relations' => [
+                'item' => [
+                    'table' => 'item_users',
+                    'subject_key' => 'user_id',
+                    'target_key' => 'item_id',
+                    'ability_key' => 'ability',
+                    'eager' => true,
+                ],
+            ],
+        ]);
+
+        $user = $eagerAuth->register('eager1@example.com', 'secret');
+        self::$db->insert('item_users', ['user_id' => $user['id'], 'item_id' => 4, 'ability' => 'view']);
+        self::$db->insert('item_users', ['user_id' => $user['id'], 'item_id' => 8, 'ability' => 'manage']);
+
+        $loaded = $eagerAuth->get($user['id']);
+        $this->assertArrayHasKey('item', $loaded);
+        $ids = array_values(array_map(fn (array $item): int => (int) $item['item_id'], $loaded['item']));
+        sort($ids);
+        $this->assertSame([4, 8], $ids);
+    }
+
+    public function testGetHydratesRelationWithEagerArrayAsSelectParams(): void
+    {
+        $eagerAuth = new DBAuth(self::$db, [
+            'table' => 'auth_user',
+            'credentials_table' => 'auth_credentials',
+            'created' => 'created',
+            'token' => 'token',
+            'credentials_last_login' => 'last_login',
+            'roles' => 'roles',
+            'roles_table' => 'auth_role',
+            'user_roles_table' => 'auth_user_role',
+            'relations' => [
+                'item' => [
+                    'table' => 'item_users',
+                    'subject_key' => 'user_id',
+                    'target_key' => 'item_id',
+                    'ability_key' => 'ability',
+                    'eager' => ['order' => 'item_id DESC'],
+                ],
+            ],
+        ]);
+
+        $user = $eagerAuth->register('eager2@example.com', 'secret');
+        self::$db->insert('item_users', ['user_id' => $user['id'], 'item_id' => 3, 'ability' => 'view']);
+        self::$db->insert('item_users', ['user_id' => $user['id'], 'item_id' => 9, 'ability' => 'view']);
+
+        $loaded = $eagerAuth->get($user['id']);
+        $ids = array_values(array_map(fn (array $item): int => (int) $item['item_id'], $loaded['item']));
+        $this->assertSame([9, 3], $ids);
+    }
+
+    public function testUserCanThrowsForInvalidSignatureAndUnknownRelation(): void
+    {
+        self::$auth->register('owner@example.com', 'secret');
+        self::$auth->login('owner@example.com', 'secret');
+
+        $this->expectException(\InvalidArgumentException::class);
+        self::$auth->user_can('manage', 'item', '1');
+    }
+
+    public function testUserCanThrowsForUnknownRelationType(): void
+    {
+        self::$auth->register('owner@example.com', 'secret');
+        self::$auth->login('owner@example.com', 'secret');
+
+        $this->expectException(\InvalidArgumentException::class);
+        self::$auth->user_can('manage', 'invoice', 1);
     }
 }
