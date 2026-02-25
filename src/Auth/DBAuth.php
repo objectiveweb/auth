@@ -23,7 +23,7 @@ class DBAuth extends \Objectiveweb\Auth
             'user_roles_role_id' => 'role_id',
             'role_id' => 'id',
             'role_name' => 'name',
-            'with' => [],
+            'relations' => [],
         ];
 
         parent::__construct(array_merge($defaults, $params));
@@ -124,14 +124,6 @@ class DBAuth extends \Objectiveweb\Auth
         $profile = !empty($data['profile']) ? json_encode($data['profile']) : null;
         unset($data['profile']);
 
-        $with = [];
-        foreach ($this->params['with'] as $table => $fk) {
-            if (!empty($data[$table])) {
-                $with[$table] = $data[$table];
-                unset($data[$table], $fk);
-            }
-        }
-
         $roleField = $this->params['roles'] ?? 'roles';
         $syncRoles = array_key_exists($roleField, $data);
         $roles = $syncRoles ? $this->normalizeRoleNames($data[$roleField]) : [];
@@ -167,7 +159,7 @@ class DBAuth extends \Objectiveweb\Auth
             $fields[$this->params['scopes']] = '';
         }
 
-        return $this->db->transaction(function () use ($uid, $provider, $profile, $fields, $with, $syncRoles, $roles): array {
+        return $this->db->transaction(function () use ($uid, $provider, $profile, $fields, $syncRoles, $roles): array {
             $id = $this->db->insert($this->params['table'], $fields);
             if (!$id) {
                 throw new \Exception('Could not create user');
@@ -175,15 +167,6 @@ class DBAuth extends \Objectiveweb\Auth
 
             $userId = ctype_digit((string) $id) ? (int) $id : $id;
             $fields[$this->params['id']] = $userId;
-
-            foreach ($with as $withTable => $withContent) {
-                $fk = $this->params['with'][$withTable];
-                $payload = [$fk => $userId];
-                foreach ($withContent as $k => $v) {
-                    $payload[$k] = $v;
-                }
-                $this->db->insert($withTable, $payload);
-            }
 
             $credentialPayload = [
                 'user_id' => $userId,
@@ -405,10 +388,7 @@ class DBAuth extends \Objectiveweb\Auth
     private function hydrateUserRow(array $row): array
     {
         $row = $this->normalizeUserRow($row);
-
-        foreach ($this->params['with'] as $table => $fk) {
-            $row[$table] = $this->db->select($table, [$fk => $row[$this->params['id']]])->all();
-        }
+        $row = $this->hydrateEagerRelations($row);
 
         $roleField = $this->params['roles'] ?? 'roles';
         $row[$roleField] = $this->loadUserRoles($row[$this->params['id']]);
@@ -526,6 +506,202 @@ class DBAuth extends \Objectiveweb\Auth
             fn (mixed $role): string => trim((string) $role),
             $roles
         ))));
+    }
+
+    protected function userCanRelation(int $subjectId, string $resourceType, int $resourceId, string $ability): bool
+    {
+        $relation = $this->getRelationConfig($resourceType);
+        if ($relation === null) {
+            throw new \InvalidArgumentException("Unknown relation type `$resourceType`");
+        }
+
+        $rows = $this->db->select(
+            $relation['table'],
+            [
+                $relation['subject_key'] => $subjectId,
+                $relation['target_key'] => $resourceId,
+            ]
+        )->all();
+
+        return $this->rowsAllowAbility($rows, $relation, $ability);
+    }
+
+    protected function userCanRelationList(int $subjectId, string $resourceType, string $ability): array
+    {
+        $relation = $this->getRelationConfig($resourceType);
+        if ($relation === null) {
+            throw new \InvalidArgumentException("Unknown relation type `$resourceType`");
+        }
+
+        $rows = $this->db->select(
+            $relation['table'],
+            [$relation['subject_key'] => $subjectId]
+        )->all();
+
+        $ids = [];
+        foreach ($rows as $row) {
+            if (!$this->rowAllowsAbility($row, $relation, $ability)) {
+                continue;
+            }
+
+            $targetId = $row[$relation['target_key']] ?? null;
+            if (is_int($targetId)) {
+                $ids[] = $targetId;
+                continue;
+            }
+
+            if (is_string($targetId) && ctype_digit($targetId)) {
+                $ids[] = (int) $targetId;
+            }
+        }
+
+        $ids = array_values(array_unique($ids));
+        sort($ids);
+        return $ids;
+    }
+
+    private function getRelationConfig(string $resourceType): ?array
+    {
+        $relations = $this->params['relations'] ?? [];
+        $relation = $relations[$resourceType] ?? null;
+        if (!is_array($relation)) {
+            return null;
+        }
+
+        $table = $relation['table'] ?? null;
+        $subjectKey = $relation['subject_key'] ?? null;
+        $targetKey = $relation['target_key'] ?? null;
+        if (!is_string($table) || !is_string($subjectKey) || !is_string($targetKey)) {
+            return null;
+        }
+
+        if (!isset($relation['ability_key']) && !isset($relation['role_key'])) {
+            return null;
+        }
+
+        return $relation;
+    }
+
+    private function rowsAllowAbility(array $rows, array $relation, string $ability): bool
+    {
+        foreach ($rows as $row) {
+            if ($this->rowAllowsAbility($row, $relation, $ability)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function rowAllowsAbility(array $row, array $relation, string $ability): bool
+    {
+        $abilityKey = $relation['ability_key'] ?? null;
+        if (is_string($abilityKey)) {
+            return (($row[$abilityKey] ?? null) === $ability);
+        }
+
+        $roleKey = $relation['role_key'] ?? null;
+        if (!is_string($roleKey)) {
+            return false;
+        }
+
+        $role = (string) ($row[$roleKey] ?? '');
+        if ($role === '') {
+            return false;
+        }
+
+        $roleAbilities = $relation['role_abilities'] ?? [];
+        if (!is_array($roleAbilities)) {
+            return false;
+        }
+
+        $abilities = $roleAbilities[$role] ?? [];
+        if (!is_array($abilities)) {
+            return false;
+        }
+
+        return in_array($ability, $abilities, true);
+    }
+
+    private function hydrateEagerRelations(array $row): array
+    {
+        $relations = $this->params['relations'] ?? [];
+        if (!is_array($relations)) {
+            return $row;
+        }
+
+        $subjectId = $row[$this->params['id']] ?? null;
+        if (!is_int($subjectId)) {
+            if (is_string($subjectId) && ctype_digit($subjectId)) {
+                $subjectId = (int) $subjectId;
+            } else {
+                return $row;
+            }
+        }
+
+        foreach ($relations as $relationName => $relation) {
+            if (!is_array($relation) || !array_key_exists('eager', $relation)) {
+                continue;
+            }
+
+            $eager = $relation['eager'];
+            if ($eager === false || $eager === null) {
+                continue;
+            }
+
+            if ($eager === true) {
+                $eagerParams = [];
+            } elseif (is_array($eager)) {
+                $eagerParams = $eager;
+            } else {
+                throw new \InvalidArgumentException("Invalid eager config for relation `$relationName`");
+            }
+
+            $targetIds = $this->relationTargetIdsForSubject($relation, $subjectId);
+            if ($targetIds === []) {
+                $row[(string) $relationName] = [];
+                continue;
+            }
+
+            $eagerTable = $relation['table'] ?? null;
+            $eagerKey = $relation['target_key'] ?? null;
+            if (!is_string($eagerTable) || !is_string($eagerKey)) {
+                throw new \InvalidArgumentException("Invalid relation table/key config for relation `$relationName`");
+            }
+
+            $row[(string) $relationName] = $this->db->select(
+                $eagerTable,
+                [$eagerKey => $targetIds],
+                $eagerParams
+            )->all();
+        }
+
+        return $row;
+    }
+
+    private function relationTargetIdsForSubject(array $relation, int $subjectId): array
+    {
+        $table = $relation['table'] ?? null;
+        $subjectKey = $relation['subject_key'] ?? null;
+        $targetKey = $relation['target_key'] ?? null;
+        if (!is_string($table) || !is_string($subjectKey) || !is_string($targetKey)) {
+            return [];
+        }
+
+        $rows = $this->db->select($table, [$subjectKey => $subjectId])->all();
+        $ids = [];
+        foreach ($rows as $entry) {
+            $targetId = $entry[$targetKey] ?? null;
+            if (is_int($targetId)) {
+                $ids[] = $targetId;
+            } elseif (is_string($targetId) && ctype_digit($targetId)) {
+                $ids[] = (int) $targetId;
+            }
+        }
+
+        $ids = array_values(array_unique($ids));
+        sort($ids);
+        return $ids;
     }
 
     private function assertIdentifier(string $value): string

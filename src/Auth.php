@@ -46,12 +46,65 @@ abstract class Auth
         return !empty($_SESSION[$this->params['session_key']]);
     }
 
-    public function user_can($scope): bool
+    public function user_can(string $ability, mixed ...$args): bool|array
     {
-        if(!$this->check()) {
+        if (count($args) === 0) {
+            return $this->hasGlobalGrant($ability);
+        }
+
+        $mode = null;
+        if (count($args) === 1 && is_int($args[0])) {
+            $mode = 'user_relation';
+        } elseif (count($args) === 1 && is_string($args[0])) {
+            $mode = 'resource_list';
+        } elseif (count($args) === 2 && is_string($args[0]) && is_int($args[1])) {
+            $mode = 'resource_relation';
+        }
+
+        if ($mode === null) {
+            throw new \InvalidArgumentException('Invalid user_can() signature');
+        }
+
+        if (!$this->check()) {
+            if ($mode === 'resource_list') {
+                return [];
+            }
+
             return false;
         }
 
+        $subjectId = $this->currentUserId();
+        if ($subjectId === null) {
+            if ($mode === 'resource_list') {
+                return [];
+            }
+
+            return false;
+        }
+
+        if ($mode === 'user_relation') {
+            return $this->userCanRelation($subjectId, 'user', $args[0], $ability);
+        }
+
+        if ($mode === 'resource_list') {
+            return $this->userCanRelationList($subjectId, $args[0], $ability);
+        }
+
+        return $this->userCanRelation($subjectId, $args[0], $args[1], $ability);
+    }
+
+    private function hasGlobalGrant(string $ability): bool
+    {
+        if (!$this->check()) {
+            return false;
+        }
+
+        $grants = $this->globalGrants();
+        return in_array($ability, $grants, true);
+    }
+
+    private function globalGrants(): array
+    {
         $user = $this->user();
         $grants = [];
 
@@ -66,7 +119,36 @@ abstract class Auth
             $grants = array_merge($grants, $roles);
         }
 
-        return in_array($scope, array_values(array_unique(array_filter($grants))), true);
+        return array_values(array_unique(array_filter(array_map(
+            fn (mixed $grant): string => trim((string) $grant),
+            $grants
+        ))));
+    }
+
+    private function currentUserId(): ?int
+    {
+        $idField = $this->params['id'] ?? 'id';
+        $user = $this->user();
+        $id = $user[$idField] ?? null;
+        if (is_int($id)) {
+            return $id;
+        }
+
+        if (is_string($id) && ctype_digit($id)) {
+            return (int) $id;
+        }
+
+        return null;
+    }
+
+    protected function userCanRelation(int $subjectId, string $resourceType, int $resourceId, string $ability): bool
+    {
+        return false;
+    }
+
+    protected function userCanRelationList(int $subjectId, string $resourceType, string $ability): array
+    {
+        return [];
     }
 
     /**
