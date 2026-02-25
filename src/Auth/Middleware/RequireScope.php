@@ -9,6 +9,7 @@ use Objectiveweb\Router\MiddlewareInterface;
 
 class RequireScope implements MiddlewareInterface
 {
+    private array $user = [];
 
     public function __construct(private Auth $auth, private string|array $scopes)
     {
@@ -30,9 +31,13 @@ class RequireScope implements MiddlewareInterface
             $scopes = \Objectiveweb\Auth::AUTHENTICATED;
 
             $this->user = $this->auth->user();
-
-            if (is_array($this->user['scopes'])) {
-                $scopes = array_merge($scopes, $this->user['scopes']);
+            $scopeField = $this->auth->params['scopes'] ?? 'scopes';
+            $userScopes = $this->user[$scopeField] ?? [];
+            if (is_string($userScopes)) {
+                $userScopes = explode(',', $userScopes);
+            }
+            if (is_array($userScopes)) {
+                $scopes = array_merge($scopes, $userScopes);
             }
         } else {
             $scopes = \Objectiveweb\Auth::ANONYMOUS;

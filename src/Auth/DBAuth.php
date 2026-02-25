@@ -17,6 +17,12 @@ class DBAuth extends \Objectiveweb\Auth
             'credentials_table' => 'user_credentials',
             'credentials_last_login' => null,
             'uuid' => 'uuid',
+            'roles_table' => null,
+            'user_roles_table' => null,
+            'user_roles_user_id' => 'user_id',
+            'user_roles_role_id' => 'role_id',
+            'role_id' => 'id',
+            'role_name' => 'name',
             'with' => [],
         ];
 
@@ -42,7 +48,7 @@ class DBAuth extends \Objectiveweb\Auth
                     if (!isset($row[$this->params['id']])) {
                         continue;
                     }
-                    $rowsById[$row[$this->params['id']]] = $this->normalizeUserRow($row);
+                    $rowsById[$row[$this->params['id']]] = $this->hydrateUserRow($row);
                 }
             }
 
@@ -58,7 +64,7 @@ class DBAuth extends \Objectiveweb\Auth
             ];
 
             $slice = $this->db->select($this->params['table'], $filter, $queryParams)->all();
-            $slice = array_map(fn (array $row): array => $this->normalizeUserRow($row), $slice);
+            $slice = array_map(fn (array $row): array => $this->hydrateUserRow($row), $slice);
             $count = $this->db->count($this->params['table'], $filter);
         }
 
@@ -84,11 +90,7 @@ class DBAuth extends \Objectiveweb\Auth
             throw new UserException('User not found', 404);
         }
 
-        foreach ($this->params['with'] as $table => $fk) {
-            $row[$table] = $this->db->select($table, [$fk => $row[$this->params['id']]])->all();
-        }
-
-        return $this->normalizeUserRow($row);
+        return $this->hydrateUserRow($row);
     }
 
     public function register($uid, $password = null, $data = array())
@@ -130,8 +132,17 @@ class DBAuth extends \Objectiveweb\Auth
             }
         }
 
+        $roleField = $this->params['roles'] ?? 'roles';
+        $syncRoles = array_key_exists($roleField, $data);
+        $roles = $syncRoles ? $this->normalizeRoleNames($data[$roleField]) : [];
+        unset($data[$roleField]);
+
         $fields = [];
         foreach ($data as $key => $value) {
+            if ($key === $this->params['scopes'] && is_array($value)) {
+                $fields[$key] = implode(',', $value);
+                continue;
+            }
             $fields[$key] = is_array($value) ? json_encode($value) : $value;
         }
 
@@ -152,13 +163,11 @@ class DBAuth extends \Objectiveweb\Auth
             $fields[$this->params['created']] = date('Y-m-d H:i:s');
         }
 
-        if (!empty($fields[$this->params['scopes']]) && is_array($fields[$this->params['scopes']])) {
-            $fields[$this->params['scopes']] = implode(',', $fields[$this->params['scopes']]);
-        } elseif (!array_key_exists($this->params['scopes'], $fields)) {
+        if (!array_key_exists($this->params['scopes'], $fields)) {
             $fields[$this->params['scopes']] = '';
         }
 
-        return $this->db->transaction(function () use ($uid, $provider, $profile, $fields, $with): array {
+        return $this->db->transaction(function () use ($uid, $provider, $profile, $fields, $with, $syncRoles, $roles): array {
             $id = $this->db->insert($this->params['table'], $fields);
             if (!$id) {
                 throw new \Exception('Could not create user');
@@ -189,12 +198,11 @@ class DBAuth extends \Objectiveweb\Auth
 
             $this->db->insert($this->params['credentials_table'], $credentialPayload);
 
-            unset($fields[$this->params['password']]);
-            if ($this->params['token']) {
-                unset($fields[$this->params['token']]);
+            if ($syncRoles) {
+                $this->syncUserRoles($userId, $roles);
             }
 
-            return $this->normalizeUserRow($fields);
+            return $this->get($userId);
         });
     }
 
@@ -259,21 +267,29 @@ class DBAuth extends \Objectiveweb\Auth
             unset($data[$this->params['uuid']]);
         }
 
-        if (empty($data)) {
-            return;
-        }
+        $roleField = $this->params['roles'] ?? 'roles';
+        $syncRoles = array_key_exists($roleField, $data);
+        $roles = $syncRoles ? $this->normalizeRoleNames($data[$roleField]) : [];
+        unset($data[$roleField]);
 
-        if (isset($data[$this->params['scopes']]) && is_array($data[$this->params['scopes']])) {
-            $data[$this->params['scopes']] = implode(',', $data[$this->params['scopes']]);
-        }
-
-        foreach ($data as $k => $v) {
-            if (is_array($v)) {
-                $data[$k] = json_encode($v);
+        if (!empty($data)) {
+            if (isset($data[$this->params['scopes']]) && is_array($data[$this->params['scopes']])) {
+                $data[$this->params['scopes']] = implode(',', $data[$this->params['scopes']]);
             }
+
+            foreach ($data as $k => $v) {
+                if (is_array($v)) {
+                    $data[$k] = json_encode($v);
+                }
+            }
+
+            $this->db->update($this->params['table'], $data, [$column => $user_id]);
         }
 
-        $this->db->update($this->params['table'], $data, [$column => $user_id]);
+        if ($syncRoles) {
+            $target = $this->get($user_id, $key);
+            $this->syncUserRoles($target[$this->params['id']], $roles);
+        }
     }
 
     public function delete($user_id)
@@ -287,6 +303,12 @@ class DBAuth extends \Objectiveweb\Auth
 
         return $this->db->transaction(function () use ($user_id): bool {
             $this->db->delete($this->params['credentials_table'], ['user_id' => $user_id]);
+            if ($this->rolesEnabled()) {
+                $this->db->delete(
+                    $this->params['user_roles_table'],
+                    [$this->params['user_roles_user_id'] => $user_id]
+                );
+            }
             $deleted = $this->db->delete($this->params['table'], [$this->params['id'] => $user_id]);
 
             if ($deleted !== 1) {
@@ -378,6 +400,141 @@ class DBAuth extends \Objectiveweb\Auth
         }
 
         return $row;
+    }
+
+    private function hydrateUserRow(array $row): array
+    {
+        $row = $this->normalizeUserRow($row);
+
+        foreach ($this->params['with'] as $table => $fk) {
+            $row[$table] = $this->db->select($table, [$fk => $row[$this->params['id']]])->all();
+        }
+
+        $roleField = $this->params['roles'] ?? 'roles';
+        $row[$roleField] = $this->loadUserRoles($row[$this->params['id']]);
+
+        return $row;
+    }
+
+    private function rolesEnabled(): bool
+    {
+        return !empty($this->params['roles_table']) && !empty($this->params['user_roles_table']);
+    }
+
+    private function loadUserRoles(int|string $userId): array
+    {
+        if (!$this->rolesEnabled()) {
+            return [];
+        }
+
+        $roleName = $this->assertIdentifier((string) $this->params['role_name']);
+        $roleId = $this->assertIdentifier((string) $this->params['role_id']);
+        $rolesTable = $this->assertIdentifier((string) $this->params['roles_table']);
+        $userRolesTable = $this->assertIdentifier((string) $this->params['user_roles_table']);
+        $userRolesUserId = $this->assertIdentifier((string) $this->params['user_roles_user_id']);
+        $userRolesRoleId = $this->assertIdentifier((string) $this->params['user_roles_role_id']);
+
+        $query = $this->db->query(
+            sprintf(
+                'SELECT r.%s AS role_name
+                 FROM %s r
+                 INNER JOIN %s ur ON ur.%s = r.%s
+                 WHERE ur.%s = :user_id
+                 ORDER BY r.%s',
+                $roleName,
+                $rolesTable,
+                $userRolesTable,
+                $userRolesRoleId,
+                $roleId,
+                $userRolesUserId,
+                $roleName
+            )
+        );
+        $query->exec(['user_id' => $userId]);
+
+        $rows = $query->all();
+        return array_values(array_map(
+            fn (array $entry): string => (string) $entry['role_name'],
+            $rows
+        ));
+    }
+
+    private function syncUserRoles(int|string $userId, array $roles): void
+    {
+        if (!$this->rolesEnabled()) {
+            return;
+        }
+
+        $userRolesTable = (string) $this->params['user_roles_table'];
+        $userRolesUserId = (string) $this->params['user_roles_user_id'];
+        $userRolesRoleId = (string) $this->params['user_roles_role_id'];
+
+        $this->db->delete($userRolesTable, [$userRolesUserId => $userId]);
+
+        foreach ($this->resolveRoleIds($roles) as $roleId) {
+            $this->db->insert($userRolesTable, [
+                $userRolesUserId => $userId,
+                $userRolesRoleId => $roleId,
+            ]);
+        }
+    }
+
+    private function resolveRoleIds(array $roles): array
+    {
+        if (!$this->rolesEnabled()) {
+            return [];
+        }
+
+        $roleIds = [];
+        $rolesTable = (string) $this->params['roles_table'];
+        $roleIdField = (string) $this->params['role_id'];
+        $roleNameField = (string) $this->params['role_name'];
+
+        foreach ($roles as $roleName) {
+            $existing = $this->db->select($rolesTable, [$roleNameField => $roleName], ['limit' => 1])->fetch();
+            if ($existing && isset($existing[$roleIdField])) {
+                $roleIds[] = $existing[$roleIdField];
+                continue;
+            }
+
+            $inserted = $this->db->insert($rolesTable, [$roleNameField => $roleName]);
+            if ($inserted !== null) {
+                $roleIds[] = ctype_digit((string) $inserted) ? (int) $inserted : $inserted;
+                continue;
+            }
+
+            $created = $this->db->select($rolesTable, [$roleNameField => $roleName], ['limit' => 1])->fetch();
+            if ($created && isset($created[$roleIdField])) {
+                $roleIds[] = $created[$roleIdField];
+            }
+        }
+
+        return array_values(array_unique($roleIds));
+    }
+
+    private function normalizeRoleNames(mixed $roles): array
+    {
+        if (is_string($roles)) {
+            $roles = explode(',', $roles);
+        }
+
+        if (!is_array($roles)) {
+            return [];
+        }
+
+        return array_values(array_unique(array_filter(array_map(
+            fn (mixed $role): string => trim((string) $role),
+            $roles
+        ))));
+    }
+
+    private function assertIdentifier(string $value): string
+    {
+        if (!preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $value)) {
+            throw new \InvalidArgumentException("Invalid SQL identifier `$value`");
+        }
+
+        return $value;
     }
 
     private function uuidV4(): string

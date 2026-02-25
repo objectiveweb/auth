@@ -1,35 +1,72 @@
 <?php
 
-require_once __DIR__ . '/Mysql_TestCase.php';
+require_once dirname(__DIR__) . '/vendor/autoload.php';
 
 use Objectiveweb\Auth\Controller\UserController;
+use Objectiveweb\Auth\DBAuth;
+use Objectiveweb\DB;
+use PHPUnit\Framework\TestCase;
 
-class UserControllerTest extends Mysql_TestCase
+class UserControllerTest extends TestCase
 {
-
-    /** @var  UserController */
-    protected static $controller;
-
-    private static $shared_session = array();
+    private static DB $db;
+    private static DBAuth $auth;
+    private static UserController $controller;
 
     public static function setUpBeforeClass(): void
     {
-        parent::setUpBeforeClass();
-        if (self::$auth) {
-            self::$controller = new UserController(self::$auth);
-        }
+        self::$db = new DB('sqlite::memory:');
+
+        self::$db->query(
+            'CREATE TABLE auth_user (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                uuid TEXT NOT NULL UNIQUE,
+                name TEXT,
+                image TEXT,
+                scopes TEXT,
+                created TEXT,
+                password TEXT,
+                token TEXT
+            )'
+        )->exec();
+
+        self::$db->query(
+            'CREATE TABLE auth_credentials (
+                uid TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                user_id INTEGER NOT NULL,
+                profile TEXT NULL,
+                last_login TEXT NULL,
+                PRIMARY KEY(uid, provider)
+            )'
+        )->exec();
+
+        self::$auth = new DBAuth(self::$db, [
+            'table' => 'auth_user',
+            'credentials_table' => 'auth_credentials',
+            'created' => 'created',
+            'token' => 'token',
+            'credentials_last_login' => 'last_login',
+        ]);
+        self::$controller = new UserController(self::$auth);
     }
 
-    public function testPost()
+    protected function setUp(): void
     {
+        $_SESSION = [];
+        self::$db->query('DELETE FROM auth_credentials')->exec();
+        self::$db->query('DELETE FROM auth_user')->exec();
+    }
 
-        $user = self::$controller->post(array(
-			'uid' => 'vagrant@localhost',
-			'password' => 'test',
-            'name' => 'Test User'));
+    public function testPost(): void
+    {
+        $user = self::$controller->post([
+            'uid' => 'vagrant@localhost',
+            'password' => 'test',
+            'name' => 'Test User',
+        ]);
 
-        $this->assertEquals(1, $user['id']);
-
+        $this->assertSame(1, (int) $user['id']);
     }
 
     public function testPostMissingUid(): void
@@ -40,28 +77,33 @@ class UserControllerTest extends Mysql_TestCase
         ]);
     }
 
-    /**
-     * @depends testPost
-     */
-    public function testGet() {
-        $user = self::$controller->get(1);
+    public function testGet(): void
+    {
+        $user = self::$controller->post([
+            'uid' => 'vagrant@localhost',
+            'password' => 'test',
+            'name' => 'Test User',
+        ]);
 
-        $this->assertEquals(1, $user['id']);
+        $loaded = self::$controller->get((int) $user['id']);
+        $this->assertSame((int) $user['id'], (int) $loaded['id']);
     }
 
-    /**
-     * @depends testGet
-     */
-    public function testQuery() {
+    public function testQuery(): void
+    {
+        self::$controller->post([
+            'uid' => 'vagrant@localhost',
+            'password' => 'test',
+            'name' => 'Test User',
+        ]);
+
         $all = self::$controller->get();
 
-        $this->assertEquals(1, count($all['_embedded']['ow_user']));
-
-        $this->assertEquals('Test User', $all['_embedded']['ow_user'][0]['name']);
-
-        $this->assertEquals(1, $all['page']['totalElements']);
-        $this->assertEquals(1, $all['page']['totalPages']);
-        $this->assertEquals(0, $all['page']['number']);
+        $this->assertSame(1, count($all['_embedded']['auth_user']));
+        $this->assertSame('Test User', $all['_embedded']['auth_user'][0]['name']);
+        $this->assertSame(1, $all['page']['totalElements']);
+        $this->assertSame(1, $all['page']['totalPages']);
+        $this->assertSame(0, $all['page']['number']);
     }
 
     public function testQueryInvalidFilterField(): void
@@ -70,26 +112,33 @@ class UserControllerTest extends Mysql_TestCase
         self::$controller->get(['unknown_field' => 'x']);
     }
 
-    /**
-     * @depends testQuery
-     */
-    public function testPut() {
+    public function testPut(): void
+    {
+        $user = self::$controller->post([
+            'uid' => 'vagrant@localhost',
+            'password' => 'test',
+            'name' => 'Test User',
+        ]);
 
-        self::$controller->put(1, array( 'name' => 'Updated name' ));
+        self::$controller->put((int) $user['id'], ['name' => 'Updated name']);
+        $updated = self::$controller->get((int) $user['id']);
 
-        $user = self::$controller->get(1);
-
-        $this->assertEquals('Updated name', $user['name']);
+        $this->assertSame('Updated name', $updated['name']);
     }
 
-    /**
-     * @depends testPut
-     */
-    public function testDelete() {
+    public function testDelete(): void
+    {
         $this->expectException(\Objectiveweb\Auth\UserException::class);
-        $deleted = self::$controller->delete(1);
+
+        $user = self::$controller->post([
+            'uid' => 'vagrant@localhost',
+            'password' => 'test',
+            'name' => 'Test User',
+        ]);
+
+        $deleted = self::$controller->delete((int) $user['id']);
         $this->assertTrue($deleted);
 
-        $user = self::$controller->get(1);
+        self::$controller->get((int) $user['id']);
     }
 }
