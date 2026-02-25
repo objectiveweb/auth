@@ -78,6 +78,9 @@ abstract class Auth
             unset($user[$this->params['password']]);
             unset($user[$this->params['token']]);
 
+            if (session_status() === PHP_SESSION_ACTIVE) {
+                session_regenerate_id(true);
+            }
             $this->user($user);
 
             // TODO add login ip
@@ -132,7 +135,7 @@ abstract class Auth
 
     public function validate($user)
     {
-        $uid = trim(@$user['uid']);
+        $uid = trim((string) ($user['uid'] ?? ''));
 
         if (empty($uid)) {
             throw new \Exception("Missing uid", 400);
