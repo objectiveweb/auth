@@ -15,7 +15,7 @@ class RequireRole implements MiddlewareInterface
         $this->roles = is_array($roles) ? $roles : [$roles];
     }
 
-    public function after(string $method, string $fn, array $params, array|null $response): mixed
+    public function after(string $method, string $fn, array $params, mixed $response): mixed
     {
         if ($this->auth->check() && is_array($response) && !isset($response['_user'])) {
             $response['_user'] = $this->auth->user();
