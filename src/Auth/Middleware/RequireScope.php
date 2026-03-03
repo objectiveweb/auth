@@ -16,7 +16,7 @@ class RequireScope implements MiddlewareInterface
         $this->scopes = is_array($scopes) ? $scopes : [$scopes];
     }
 
-    public function after(string $method, string $fn, array $params, array|null $response): mixed
+    public function after(string $method, string $fn, array $params, mixed $response): mixed
     {
         if ($this->auth->check() && is_array($response) && !isset($response['_user'])) {
             $response['_user'] = $this->auth->user();
