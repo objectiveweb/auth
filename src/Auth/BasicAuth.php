@@ -241,18 +241,59 @@ class BasicAuth extends \Objectiveweb\Auth
         return $this->credentials[$provider][$accountid] ?? false;
     }
 
+    public function get_credentials($user_id, $key = 'id'): array
+    {
+        $user = $this->get($user_id, $key);
+        $resolvedUserId = $user[$this->params['id']] ?? null;
+        $result = [];
+
+        foreach ($this->credentials as $provider => $records) {
+            foreach ($records as $uid => $credential) {
+                if (($credential['user_id'] ?? null) != $resolvedUserId) {
+                    continue;
+                }
+
+                $profile = $credential['profile'] ?? null;
+                if (is_string($profile) && $profile !== '') {
+                    $decoded = json_decode($profile, true);
+                    $profile = is_array($decoded) ? $decoded : $profile;
+                }
+
+                if (is_array($profile) && isset($profile['_auth']) && is_array($profile['_auth'])) {
+                    unset($profile['_auth']['token']);
+                }
+
+                $result[] = [
+                    'uid' => $uid,
+                    'provider' => $provider,
+                    'profile' => $profile,
+                    'last_login' => $credential['last_login'] ?? null,
+                    'created' => $credential['created'] ?? null,
+                ];
+            }
+        }
+
+        usort($result, function (array $a, array $b): int {
+            return [$a['provider'], $a['uid']] <=> [$b['provider'], $b['uid']];
+        });
+
+        return $result;
+    }
+
     public function update_credential($userid, $provider, $uid, $profile = null)
     {
         if (is_array($profile)) {
             $profile = json_encode($profile);
         }
 
+        $created = $this->credentials[$provider][$uid]['created'] ?? date('Y-m-d H:i:s');
         $this->credentials[$provider][$uid] = [
             'user_id' => $userid,
             'provider' => $provider,
             'uid' => $uid,
             'profile' => $profile,
             'last_login' => date('Y-m-d H:i:s'),
+            'created' => $created,
         ];
 
         return true;
@@ -275,8 +316,14 @@ class BasicAuth extends \Objectiveweb\Auth
         }
 
         if ($key === 'uid') {
-            $credential = $this->get_credential('local', $value);
-            return $credential['user_id'] ?? null;
+            foreach ($this->params['login_providers'] as $provider) {
+                $credential = $this->get_credential($provider, $value);
+                if (!empty($credential['user_id'])) {
+                    return $credential['user_id'];
+                }
+            }
+
+            return null;
         }
 
         foreach ($this->users as $id => $user) {
@@ -325,4 +372,5 @@ class BasicAuth extends \Objectiveweb\Auth
     {
         return password_get_info($value)['algo'] !== null;
     }
+
 }

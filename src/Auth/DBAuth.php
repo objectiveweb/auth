@@ -16,6 +16,7 @@ class DBAuth extends \Objectiveweb\Auth
             'last_login' => null,
             'credentials_table' => 'user_credentials',
             'credentials_last_login' => null,
+            'credentials_created' => null,
             'uuid' => 'uuid',
             'roles_table' => null,
             'user_roles_table' => null,
@@ -177,6 +178,9 @@ class DBAuth extends \Objectiveweb\Auth
 
             if (!empty($this->params['credentials_last_login'])) {
                 $credentialPayload[$this->params['credentials_last_login']] = date('Y-m-d H:i:s');
+            }
+            if (!empty($this->params['credentials_created'])) {
+                $credentialPayload[$this->params['credentials_created']] = date('Y-m-d H:i:s');
             }
 
             $this->db->insert($this->params['credentials_table'], $credentialPayload);
@@ -370,17 +374,72 @@ class DBAuth extends \Objectiveweb\Auth
             'provider' => $provider,
             'uid' => $uid,
         ]);
+        if (!empty($this->params['credentials_created'])) {
+            $data[$this->params['credentials_created']] = date('Y-m-d H:i:s');
+        }
 
         $this->db->insert($this->params['credentials_table'], $data);
         return true;
     }
 
+    public function get_credentials($user_id, $key = 'id'): array
+    {
+        $user = $this->get($user_id, $key);
+        $rows = $this->db->select(
+            $this->params['credentials_table'],
+            ['user_id' => $user[$this->params['id']]]
+        )->all();
+
+        $lastLoginField = $this->params['credentials_last_login'] ?? null;
+        $createdField = $this->params['credentials_created'] ?? null;
+
+        $result = [];
+        foreach ($rows as $row) {
+            $profile = $row['profile'] ?? null;
+            if (is_string($profile) && $profile !== '') {
+                $decoded = json_decode($profile, true);
+                $profile = is_array($decoded) ? $decoded : $profile;
+            }
+
+            if (is_array($profile) && isset($profile['_auth']) && is_array($profile['_auth'])) {
+                unset($profile['_auth']['token']);
+            }
+
+            $result[] = [
+                'uid' => $row['uid'] ?? null,
+                'provider' => $row['provider'] ?? null,
+                'profile' => $profile,
+                'last_login' => ($lastLoginField && array_key_exists($lastLoginField, $row))
+                    ? $row[$lastLoginField]
+                    : ($row['last_login'] ?? null),
+                'created' => ($createdField && array_key_exists($createdField, $row))
+                    ? $row[$createdField]
+                    : ($row['created'] ?? null),
+            ];
+        }
+
+        usort($result, function (array $a, array $b): int {
+            return [$a['provider'], $a['uid']] <=> [$b['provider'], $b['uid']];
+        });
+
+        return $result;
+    }
+
     private function normalizeUserRow(array $row): array
     {
         $scopeField = $this->params['scopes'];
-        if (!empty($row[$scopeField]) && is_string($row[$scopeField])) {
-            $row[$scopeField] = explode(',', $row[$scopeField]);
+        $scopes = $row[$scopeField] ?? [];
+
+        if (is_string($scopes)) {
+            $scopes = explode(',', $scopes);
+        } elseif (!is_array($scopes)) {
+            $scopes = [];
         }
+
+        $row[$scopeField] = array_values(array_filter(array_map(
+            fn (mixed $scope): string => trim((string) $scope),
+            $scopes
+        )));
 
         return $row;
     }
@@ -721,4 +780,5 @@ class DBAuth extends \Objectiveweb\Auth
 
         return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($data), 4));
     }
+
 }

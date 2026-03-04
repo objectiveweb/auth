@@ -27,12 +27,13 @@ class AuthController
     #[Middleware(RequireScope::class, Auth::ALL)]
     function index()
     {
-        if($this->auth->check()){
-            return $this->auth->user();
+        if ($this->auth->check()) {
+            $user = $this->auth->user();
+            $user['credentials'] = $this->auth->get_credentials($user[$this->auth->params['id']]);
+            return $user;
         }
-        else {
-            return null;
-        }
+
+        return null;
     }
 
     #[Middleware(RequireScope::class, Auth::AUTHENTICATED)]
@@ -133,8 +134,17 @@ class AuthController
                 throw new UserException('Invalid request', 400);
             }
 
-            // find user
-            $credential = $this->auth->get_credential('local', $form['uid']);
+            // find user by recovery channels
+            $credential = false;
+            foreach (['email', 'phone'] as $provider) {
+                $candidate = $this->auth->get_credential($provider, $form['uid']);
+                if (empty($candidate['user_id'])) {
+                    continue;
+                }
+
+                $credential = $candidate;
+                break;
+            }
 
             if (!empty($credential['user_id'])) {
                 // return new token

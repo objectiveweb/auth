@@ -69,4 +69,35 @@ class BasicAuthTest extends TestCase
         $this->expectException(UserException::class);
         $this->auth->login('alice@example.com', 'secret');
     }
+
+    public function testLoginWithEmailProviderWhenConfiguredInLoginProviders(): void
+    {
+        $auth = new BasicAuth([], [
+            'token' => 'token',
+            'login_providers' => ['email', 'local'],
+        ]);
+
+        $auth->register('alice@example.com', 'secret', ['provider' => 'email']);
+        $user = $auth->login('alice@example.com', 'secret');
+
+        $this->assertSame('alice@example.com', $user['uid']);
+    }
+
+    public function testGetCredentialsReturnsOnlyExpectedFields(): void
+    {
+        $user = $this->auth->register('bob@example.com', 'secret', ['provider' => 'email']);
+        $this->auth->update_credential($user['id'], 'phone', '+5511999999999', ['country' => 'BR']);
+
+        $credentials = $this->auth->get_credentials($user['id']);
+        $this->assertCount(2, $credentials);
+
+        foreach ($credentials as $credential) {
+            $this->assertSame(
+                ['uid', 'provider', 'profile', 'last_login', 'created'],
+                array_keys($credential)
+            );
+            $this->assertNotNull($credential['last_login']);
+            $this->assertNotNull($credential['created']);
+        }
+    }
 }
