@@ -22,7 +22,7 @@ This package requires:
 - password reset tokens
 - immutable UUID generation on user creation (default field name: `uuid`)
 
-#### Minimal setup
+#### Example setup
 
 ```php
 use Objectiveweb\Auth\DBAuth;
@@ -37,6 +37,7 @@ $auth = new DBAuth($db, [
     'password' => 'password',
     'scopes' => 'scopes',
     'roles' => 'roles',
+    'login_providers' => ['local', 'email', 'phone'],
     'token' => 'token',
     'created' => 'created',
     'uuid' => 'uuid',
@@ -111,6 +112,7 @@ CREATE TABLE auth_user_role (
 - `password`: password field (default `password`)
 - `scopes`: scopes field (default `scopes`)
 - `roles`: roles field attached to the user payload (default `roles`)
+- `login_providers`: ordered providers used by `login()` (default `['local', 'email']`)
 - `token`: optional password-reset token field
 - `table`: users table name (default `user`)
 - `credentials_table`: credentials table name (default `user_credentials`)
@@ -194,6 +196,16 @@ $token = $auth->update_token($credential['user_id']);
 $auth->passwd_reset($token, 'new-password');
 ```
 
+## Credential strategy (`local`, `email`, `phone`, social)
+
+Recommended model:
+- `local`: password-based login identity
+- `email`: email identities for verification/login/magic-link
+- `phone`: phone identities for SMS verification/login
+- `google`, `facebook`, ...: external OAuth providers
+
+Store each identity in `credentials_table` as `(provider, uid)`, linked to one `user_id`.
+
 ## Query and update
 
 ```php
@@ -205,6 +217,9 @@ $auth->update($userId, ['name' => 'Alice Updated']);
 
 // Update password
 $auth->passwd($userId, 'new-password');
+
+// List all credentials for a user
+$credentials = $auth->get_credentials($userId);
 ```
 
 ## Authorization checks (`user_can`)

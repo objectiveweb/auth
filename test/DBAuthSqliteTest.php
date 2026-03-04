@@ -36,7 +36,10 @@ class DBAuthSqliteTest extends TestCase
                 provider TEXT NOT NULL,
                 user_id INTEGER NOT NULL,
                 profile TEXT NULL,
+                token TEXT NULL,
+                verified_at TEXT NULL,
                 last_login TEXT NULL,
+                created TEXT NULL,
                 PRIMARY KEY(uid, provider)
             )'
         )->exec();
@@ -78,6 +81,7 @@ class DBAuthSqliteTest extends TestCase
             'created' => 'created',
             'token' => 'token',
             'credentials_last_login' => 'last_login',
+            'credentials_created' => 'created',
             'roles' => 'roles',
             'roles_table' => 'auth_role',
             'user_roles_table' => 'auth_user_role',
@@ -149,6 +153,22 @@ class DBAuthSqliteTest extends TestCase
         self::$auth->login('alice@example.com', 'wrong');
     }
 
+    public function testLoginWithPhoneProviderWhenConfiguredInLoginProviders(): void
+    {
+        $auth = new DBAuth(self::$db, [
+            'table' => 'auth_user',
+            'credentials_table' => 'auth_credentials',
+            'token' => 'token',
+            'created' => 'created',
+            'login_providers' => ['phone', 'email', 'local'],
+        ]);
+
+        $auth->register('+5511999999999', 'secret', ['provider' => 'phone', 'name' => 'Phone User']);
+        $logged = $auth->login('+5511999999999', 'secret');
+
+        $this->assertSame('Phone User', $logged['name']);
+    }
+
     public function testPasswd(): void
     {
         $user = self::$auth->register('alice@example.com', 'secret');
@@ -214,6 +234,24 @@ class DBAuthSqliteTest extends TestCase
 
         self::$auth->delete($account['user_id']);
         self::$auth->login('alice@example.com', 'secret');
+    }
+
+    public function testGetCredentialsReturnsOnlyExpectedFields(): void
+    {
+        $user = self::$auth->register('alice@example.com', 'secret');
+        self::$auth->update_credential($user['id'], 'phone', '+5511999999999', ['carrier' => 'test']);
+
+        $credentials = self::$auth->get_credentials($user['id']);
+
+        $this->assertCount(2, $credentials);
+        foreach ($credentials as $credential) {
+            $this->assertSame(
+                ['uid', 'provider', 'profile', 'last_login', 'created'],
+                array_keys($credential)
+            );
+            $this->assertNotNull($credential['last_login']);
+            $this->assertNotNull($credential['created']);
+        }
     }
 
     public function testUserCanChecksScopesAndRoles(): void

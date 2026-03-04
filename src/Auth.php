@@ -20,9 +20,11 @@ abstract class Auth
             'password' => 'password',
             'scopes' => 'scopes',
             'roles' => 'roles',
+            'login_providers' => ['local', 'email'],
             'token' => NULL, // Name of the field that should store user tokens
             'register_scope' => Auth::ANONYMOUS, // who is allowed to use /register
-            'register_callback' => null
+            'register_callback' => null,
+            'token_callback' => null,
         ];
 
         $this->params = array_merge($defaults, $params);
@@ -159,8 +161,18 @@ abstract class Auth
      */
     public function &login($uid, $password)
     {
+        $credential = false;
+        $provider = null;
+        foreach ($this->params['login_providers'] as $candidateProvider) {
+            $candidateCredential = $this->get_credential($candidateProvider, $uid);
+            if (!$candidateCredential) {
+                continue;
+            }
 
-        $credential = $this->get_credential('local', $uid);
+            $credential = $candidateCredential;
+            $provider = $candidateProvider;
+            break;
+        }
 
         if (!$credential) {
             throw new Auth\UserException('User does not exist', 404);
@@ -179,7 +191,7 @@ abstract class Auth
             $this->user($user);
 
             // TODO add login ip
-            $this->update_credential($user[$this->params['id']], 'local', $uid, []);
+            $this->update_credential($user[$this->params['id']], (string) $provider, $uid, []);
 
             return $user;
         } else {
@@ -318,6 +330,18 @@ abstract class Auth
      * @throws \Exception
      */
     abstract public function get_credential($provider, $accountid);
+
+    /**
+     * List all credentials for a user.
+     *
+     * Returned rows are normalized to:
+     * - uid
+     * - provider
+     * - profile
+     * - last_login
+     * - created
+     */
+    abstract public function get_credentials($user_id, $key = 'id'): array;
 
     /**
      * Inserts a new account on $userid, or update the existing one

@@ -91,7 +91,7 @@ class OAuthController extends AuthController
 
         // if provider credential does not exist, check if there's a local user with the email
         if (!$credential && !empty($email)) {
-            $credential = $this->auth->get_credential('local', $email);
+            $credential = $this->auth->get_credential('email', $email);
         }
 
         // This credential/email is not registered yet
@@ -122,7 +122,7 @@ class OAuthController extends AuthController
                 if (!empty($email)) {
                     // Add local credential to the user
                     $this->auth->update_credential($user[$this->auth->params['id']],
-                        'local',
+                        'email',
                         $email,
                         []);
                 }
