@@ -5,9 +5,8 @@ namespace Objectiveweb\Auth\Controller;
 use Objectiveweb\Auth;
 
 use Objectiveweb\Auth\AuthException;
+use Objectiveweb\Auth\Middleware\RequireRole;
 use Objectiveweb\Auth\UserException;
-use Objectiveweb\Auth\Middleware\RequireScope;
-
 use Objectiveweb\Router\Middleware;
 
 /**
@@ -17,14 +16,14 @@ use Objectiveweb\Router\Middleware;
  *
  * @package Objectiveweb\Auth
  */
-#[Middleware(RequireScope::class, Auth::ANONYMOUS)]
+#[Middleware(RequireRole::class, Auth::ANONYMOUS)]
 class AuthController
 {
     function __construct(public \Objectiveweb\Auth $auth)
     {
     }
 
-    #[Middleware(RequireScope::class, Auth::ALL)]
+    #[Middleware(RequireRole::class, Auth::ALL)]
     function index()
     {
         if ($this->auth->check()) {
@@ -36,9 +35,13 @@ class AuthController
         return null;
     }
 
-    #[Middleware(RequireScope::class, Auth::AUTHENTICATED)]
+    #[Middleware(RequireRole::class, Auth::AUTHENTICATED)]
     function getLogout($params = [])
     {
+        if (!$this->auth->check()) {
+            throw new AuthException('Forbidden', 401);
+        }
+
         $this->auth->logout();
 
         if (!empty($params['redirect'])) {
@@ -75,6 +78,8 @@ class AuthController
      */
     function postRegister(array $user)
     {
+        $this->assertCanRegister();
+
         $uid = trim((string) ($user['uid'] ?? ''));
         if ($uid === '') {
             throw new UserException('Missing uid', 400);
@@ -88,6 +93,10 @@ class AuthController
             throw new AuthException('Email inválido');
         }
 
+        if (!$this->auth->params['register_allow_grants']) {
+            unset($user[$this->auth->params['roles']]);
+        }
+
         $user = $this->auth->register($uid, $password, $user);
 
         $user['uid'] = $uid;
@@ -99,7 +108,7 @@ class AuthController
         return $user;
     }
 
-    #[Middleware(RequireScope::class, Auth::ALL)]
+    #[Middleware(RequireRole::class, Auth::ALL)]
     function postToken(array $form)
     {
         if (empty($form['token'])) {
@@ -114,7 +123,7 @@ class AuthController
         return $this->auth->passwd_reset($form['token'], $form['password']);
     }
 
-    #[Middleware(RequireScope::class, Auth::ALL)]
+    #[Middleware(RequireRole::class, Auth::ALL)]
     function postPassword(array $form)
     {
         // if user is logged in, update password
@@ -136,7 +145,12 @@ class AuthController
 
             // find user by recovery channels
             $credential = false;
-            foreach (['email', 'phone'] as $provider) {
+            $providers = $this->auth->params['recovery_providers'];
+            if (!is_array($providers)) {
+                $providers = [];
+            }
+
+            foreach ($providers as $provider) {
                 $candidate = $this->auth->get_credential($provider, $form['uid']);
                 if (empty($candidate['user_id'])) {
                     continue;
@@ -153,11 +167,33 @@ class AuthController
                 if (is_callable($this->auth->params['token_callback'])) {
                     return call_user_func($this->auth->params['token_callback'], $credential);
                 } else {
-                    return $credential;
+                    return [];
                 }
             } else {
                 throw new UserException('Credential not found', 404);
             }
+        }
+    }
+
+    private function assertCanRegister(): void
+    {
+        $required = $this->auth->params['register_scope'];
+        $required = is_array($required) ? $required : [$required];
+
+        if ($this->auth->check()) {
+            $available = Auth::AUTHENTICATED;
+            $user = $this->auth->user();
+            $roleField = $this->auth->params['roles'];
+            $userRoles = $user[$roleField] ?? [];
+            if (is_array($userRoles)) {
+                $available = array_merge($available, $userRoles);
+            }
+        } else {
+            $available = Auth::ANONYMOUS;
+        }
+
+        if (count(array_intersect($required, $available)) === 0) {
+            throw new AuthException('Forbidden', in_array('anon', $available, true) ? 401 : 403);
         }
     }
 }

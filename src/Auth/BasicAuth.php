@@ -124,13 +124,6 @@ class BasicAuth extends \Objectiveweb\Auth
             $record['name'] = $parts[0];
         }
 
-        $scopeKey = $this->params['scopes'];
-        if (!isset($record[$scopeKey])) {
-            $record[$scopeKey] = [];
-        } elseif (is_string($record[$scopeKey])) {
-            $record[$scopeKey] = array_filter(explode(',', $record[$scopeKey]));
-        }
-
         $this->users[$userId] = $record;
         $this->update_credential($userId, $provider, $uid, $profile);
 
@@ -179,10 +172,6 @@ class BasicAuth extends \Objectiveweb\Auth
         unset($data[$this->params['id']], $data[$this->params['password']]);
         if ($this->params['token']) {
             unset($data[$this->params['token']]);
-        }
-
-        if (array_key_exists($this->params['scopes'], $data) && is_string($data[$this->params['scopes']])) {
-            $data[$this->params['scopes']] = array_filter(explode(',', $data[$this->params['scopes']]));
         }
 
         foreach ($data as $field => $value) {

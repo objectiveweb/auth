@@ -66,9 +66,7 @@ class AuthControllerTest extends TestCase
         $auth->register('alice@example.com', 'secret', ['provider' => 'email']);
         $result = $controller->postPassword(['uid' => 'alice@example.com']);
 
-        $this->assertSame('email', $result['provider']);
-        $this->assertSame('alice@example.com', $result['uid']);
-        $this->assertNotEmpty($result['token']);
+        $this->assertSame([], $result);
     }
 
     public function testPostPasswordForgotFlowUsesPhoneCredential(): void
@@ -79,9 +77,44 @@ class AuthControllerTest extends TestCase
         $auth->register('+5511999999999', 'secret', ['provider' => 'phone']);
         $result = $controller->postPassword(['uid' => '+5511999999999']);
 
-        $this->assertSame('phone', $result['provider']);
-        $this->assertSame('+5511999999999', $result['uid']);
-        $this->assertNotEmpty($result['token']);
+        $this->assertSame([], $result);
+    }
+
+    public function testPostPasswordForgotFlowUsesLocalCredentialByDefault(): void
+    {
+        $auth = new BasicAuth([], ['token' => 'token']);
+        $controller = new AuthController($auth);
+
+        $auth->register('local@example.com', 'secret', ['provider' => 'local']);
+        $result = $controller->postPassword(['uid' => 'local@example.com']);
+
+        $this->assertSame([], $result);
+    }
+
+    public function testPostRegisterStripsRolesByDefault(): void
+    {
+        $user = $this->controller->postRegister([
+            'uid' => 'safe@example.com',
+            'password' => 'secret',
+            'roles' => ['admin'],
+        ]);
+
+        $this->assertSame([], $user['roles'] ?? []);
+    }
+
+    public function testPostRegisterRejectsWhenRegisterScopeIsAuthenticated(): void
+    {
+        $controller = new AuthController(new BasicAuth([], [
+            'token' => 'token',
+            'register_scope' => \Objectiveweb\Auth::AUTHENTICATED,
+        ]));
+
+        $this->expectException(AuthException::class);
+        $this->expectExceptionCode(401);
+        $controller->postRegister([
+            'uid' => 'blocked@example.com',
+            'password' => 'secret',
+        ]);
     }
 
     public function testIndexReturnsUserWithCredentialsWhenLoggedIn(): void

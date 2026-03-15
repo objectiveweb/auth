@@ -35,7 +35,6 @@ $auth = new DBAuth($db, [
     'credentials_table' => 'auth_credentials',
     'id' => 'id',
     'password' => 'password',
-    'scopes' => 'scopes',
     'roles' => 'roles',
     'login_providers' => ['local', 'email', 'phone'],
     'token' => 'token',
@@ -78,7 +77,6 @@ CREATE TABLE auth_user (
     uuid TEXT NOT NULL UNIQUE,
     name TEXT,
     image TEXT,
-    scopes TEXT,
     created TEXT,
     password TEXT,
     token TEXT
@@ -110,7 +108,6 @@ CREATE TABLE auth_user_role (
 - `session_key`: session storage key (default `ow_auth`)
 - `id`: user PK field (default `id`)
 - `password`: password field (default `password`)
-- `scopes`: scopes field (default `scopes`)
 - `roles`: roles field attached to the user payload (default `roles`)
 - `login_providers`: ordered providers used by `login()` (default `['local', 'email']`)
 - `token`: optional password-reset token field
@@ -225,7 +222,7 @@ $credentials = $auth->get_credentials($userId);
 ## Authorization checks (`user_can`)
 
 ```php
-// Global grants (scopes + roles)
+// Global grants (roles)
 $auth->user_can('admin'); // bool
 
 // Delegation to a target user (relation type "user")
@@ -244,5 +241,4 @@ Included:
 - `AuthController`
 - `OAuthController`
 - `UserController`
-- `RequireScope` middleware
 - `RequireRole` middleware
