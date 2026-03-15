@@ -15,7 +15,7 @@ class DBAuth extends \Objectiveweb\Auth
             'created' => null,
             'last_login' => null,
             'credentials_table' => 'user_credentials',
-            'credentials_last_login' => null,
+            'credentials_last_login' => 'last_login',
             'credentials_created' => null,
             'uuid' => 'uuid',
             'roles_table' => null,
