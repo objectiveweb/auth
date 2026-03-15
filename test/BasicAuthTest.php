@@ -100,4 +100,20 @@ class BasicAuthTest extends TestCase
             $this->assertNotNull($credential['created']);
         }
     }
+
+    public function testGetUsersByRoleReturnsMatchingUsers(): void
+    {
+        $admin = $this->auth->register('admin@example.com', 'secret', [
+            'roles' => ['admin'],
+        ]);
+        $this->auth->register('viewer@example.com', 'secret', [
+            'roles' => ['viewer'],
+        ]);
+
+        $admins = $this->auth->get_users_by_role('admin');
+
+        $this->assertCount(1, $admins);
+        $this->assertSame($admin['id'], $admins[0]['id']);
+        $this->assertSame(['admin'], $admins[0]['roles']);
+    }
 }

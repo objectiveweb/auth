@@ -46,6 +46,9 @@ class UserControllerTest extends TestCase
             'created' => 'created',
             'token' => 'token',
             'credentials_last_login' => 'last_login',
+            'credentials_created' => null,
+            'roles_table' => null,
+            'user_roles_table' => null,
         ]);
         self::$controller = new UserController(self::$auth);
     }

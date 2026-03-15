@@ -160,6 +160,8 @@ class DBAuthSqliteTest extends TestCase
             'credentials_table' => 'auth_credentials',
             'token' => 'token',
             'created' => 'created',
+            'roles_table' => 'auth_role',
+            'user_roles_table' => 'auth_user_role',
             'login_providers' => ['phone', 'email', 'local'],
         ]);
 
@@ -363,6 +365,24 @@ class DBAuthSqliteTest extends TestCase
         $reloaded = self::$auth->get($user['id']);
 
         $this->assertSame(['admin', 'operator'], $reloaded['roles']);
+    }
+
+    public function testGetUsersByRoleReturnsOnlyUsersWithMatchingRole(): void
+    {
+        $admin = self::$auth->register('admin@example.com', 'secret', [
+            'name' => 'Admin',
+            'roles' => ['admin', 'operator'],
+        ]);
+        self::$auth->register('viewer@example.com', 'secret', [
+            'name' => 'Viewer',
+            'roles' => ['viewer'],
+        ]);
+
+        $admins = self::$auth->get_users_by_role('admin');
+
+        $this->assertCount(1, $admins);
+        $this->assertSame($admin['id'], $admins[0]['id']);
+        $this->assertSame(['admin', 'operator'], $admins[0]['roles']);
     }
 
     public function testUserCanChecksDelegationForSpecificUser(): void
