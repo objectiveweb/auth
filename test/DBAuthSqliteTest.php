@@ -169,6 +169,76 @@ class DBAuthSqliteTest extends TestCase
         $this->assertSame('Phone User', $logged['name']);
     }
 
+    public function testUsesCredentialLastLoginDefaultWithConfiguredRoleTables(): void
+    {
+        $auth = new DBAuth(self::$db, [
+            'table' => 'auth_user',
+            'credentials_table' => 'auth_credentials',
+            'token' => 'token',
+            'created' => 'created',
+            'roles_table' => 'auth_role',
+            'user_roles_table' => 'auth_user_role',
+        ]);
+
+        $user = $auth->register('autodetect@example.com', 'secret', [
+            'roles' => ['admin'],
+        ]);
+
+        self::$db->update('auth_credentials', ['last_login' => null], [
+            'provider' => 'local',
+            'uid' => 'autodetect@example.com',
+        ]);
+
+        $logged = $auth->login('autodetect@example.com', 'secret');
+        $credential = $auth->get_credential('local', 'autodetect@example.com');
+
+        $this->assertSame($user['id'], $logged['id']);
+        $this->assertSame(['admin'], $logged['roles']);
+        $this->assertNotNull($credential['last_login'] ?? null);
+    }
+
+    public function testLoginHydratesRolesWhenRoleIsAssignedInDatabase(): void
+    {
+        $user = self::$auth->register('dbrole@example.com', 'secret', ['name' => 'DB Role User']);
+
+        $roleId = self::$db->insert('auth_role', ['name' => 'manager']);
+        self::$db->insert('auth_user_role', [
+            'user_id' => $user['id'],
+            'role_id' => $roleId,
+        ]);
+
+        $logged = self::$auth->login('dbrole@example.com', 'secret');
+        $this->assertArrayHasKey('roles', $logged);
+        $this->assertSame(['manager'], $logged['roles']);
+
+        $sessionUser = self::$auth->user();
+        $this->assertArrayHasKey('roles', $sessionUser);
+        $this->assertSame(['manager'], $sessionUser['roles']);
+    }
+
+    public function testLoginHydratesRolesWhenRoleTablesAreConfiguredAtInstantiation(): void
+    {
+        $auth = new DBAuth(self::$db, [
+            'table' => 'auth_user',
+            'credentials_table' => 'auth_credentials',
+            'token' => 'token',
+            'created' => 'created',
+            'roles_table' => 'auth_role',
+            'user_roles_table' => 'auth_user_role',
+        ]);
+
+        $user = $auth->register('autorole@example.com', 'secret');
+        $roleId = self::$db->insert('auth_role', ['name' => 'viewer']);
+        self::$db->insert('auth_user_role', [
+            'user_id' => $user['id'],
+            'role_id' => $roleId,
+        ]);
+
+        $logged = $auth->login('autorole@example.com', 'secret');
+        $this->assertArrayHasKey('roles', $logged);
+        $this->assertSame(['viewer'], $logged['roles']);
+    }
+
     public function testPasswd(): void
     {
         $user = self::$auth->register('alice@example.com', 'secret');
