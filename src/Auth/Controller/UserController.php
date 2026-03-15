@@ -3,7 +3,7 @@
 namespace Objectiveweb\Auth\Controller;
 
 use Objectiveweb\Auth;
-use Objectiveweb\Auth\Middleware\RequireScope;
+use Objectiveweb\Auth\Middleware\RequireRole;
 use Objectiveweb\Auth\UserException;
 use Objectiveweb\Router\Middleware;
 
@@ -13,7 +13,7 @@ use Objectiveweb\Router\Middleware;
  *
  * @package Objectiveweb\Auth
  */
-#[Middleware(RequireScope::class, ['ADMIN'])]
+#[Middleware(RequireRole::class, ['admin'])]
 class UserController
 {
     private array $allowedQueryFields;
@@ -22,22 +22,20 @@ class UserController
     public function __construct(public Auth $auth)
     {
         $this->allowedQueryFields = array_values(array_unique(array_filter([
-            $this->auth->params['id'] ?? 'id',
+            $this->auth->params['id'],
             'uid',
             'name',
             'image',
-            $this->auth->params['scopes'] ?? 'scopes',
-            $this->auth->params['roles'] ?? 'roles',
-            $this->auth->params['created'] ?? null,
+            $this->auth->params['roles'],
+            $this->auth->params['created'],
         ])));
 
         $this->allowedWriteFields = array_values(array_unique(array_filter([
             'uid',
-            $this->auth->params['password'] ?? 'password',
+            $this->auth->params['password'],
             'name',
             'image',
-            $this->auth->params['scopes'] ?? 'scopes',
-            $this->auth->params['roles'] ?? 'roles',
+            $this->auth->params['roles'],
             'provider',
             'profile',
         ])));

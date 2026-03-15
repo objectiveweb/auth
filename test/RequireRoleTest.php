@@ -7,6 +7,7 @@ if (!interface_exists(\Objectiveweb\Router\MiddlewareInterface::class)) {
 }
 
 use Objectiveweb\Auth\AuthException;
+use Objectiveweb\Auth;
 use Objectiveweb\Auth\BasicAuth;
 use Objectiveweb\Auth\Middleware\RequireRole;
 use PHPUnit\Framework\TestCase;
@@ -53,7 +54,7 @@ class RequireRoleTest extends TestCase
         $this->assertSame(['ok' => true], $out);
     }
 
-    public function testBeforeUsesConfiguredRoleFieldAndStringRoles(): void
+    public function testBeforeUsesConfiguredRoleField(): void
     {
         $auth = new BasicAuth(
             [],
@@ -62,11 +63,45 @@ class RequireRoleTest extends TestCase
                 'roles' => 'groups',
             ]
         );
-        $auth->register('role2@example.com', 'secret', ['groups' => 'admin,editor']);
+        $auth->register('role2@example.com', 'secret', ['groups' => ['admin', 'editor']]);
         $auth->login('role2@example.com', 'secret');
 
         $mw = new RequireRole($auth, ['editor']);
         $out = $mw->before('GET', 'index', ['ok' => true]);
         $this->assertSame(['ok' => true], $out);
+    }
+
+    public function testBeforeAllowsAnonymousMarkerWhenUnauthenticated(): void
+    {
+        $mw = new RequireRole($this->auth, Auth::ANONYMOUS);
+        $out = $mw->before('GET', 'index', ['ok' => true]);
+        $this->assertSame(['ok' => true], $out);
+    }
+
+    public function testBeforeRejectsAnonymousMarkerWhenAuthenticated(): void
+    {
+        $this->auth->login('admin@example.com', 'secret');
+        $mw = new RequireRole($this->auth, Auth::ANONYMOUS);
+
+        $this->expectException(AuthException::class);
+        $this->expectExceptionCode(403);
+        $mw->before('GET', 'index', []);
+    }
+
+    public function testBeforeAllowsAuthenticatedMarkerWhenLoggedIn(): void
+    {
+        $this->auth->login('admin@example.com', 'secret');
+        $mw = new RequireRole($this->auth, Auth::AUTHENTICATED);
+        $out = $mw->before('GET', 'index', ['ok' => true]);
+        $this->assertSame(['ok' => true], $out);
+    }
+
+    public function testBeforeRejectsAuthenticatedMarkerWhenUnauthenticated(): void
+    {
+        $mw = new RequireRole($this->auth, Auth::AUTHENTICATED);
+
+        $this->expectException(AuthException::class);
+        $this->expectExceptionCode(401);
+        $mw->before('GET', 'index', []);
     }
 }

@@ -26,19 +26,21 @@ class RequireRole implements MiddlewareInterface
 
     public function before(string $method, string $fn, array $params): mixed
     {
-        if (!$this->auth->check()) {
-            throw new AuthException('Forbidden', 401);
+        if ($this->auth->check()) {
+            $grants = \Objectiveweb\Auth::AUTHENTICATED;
+            $user = $this->auth->user();
+            $roleField = $this->auth->params['roles'];
+            $roles = $user[$roleField] ?? [];
+            if (is_array($roles)) {
+                $grants = array_merge($grants, $roles);
+            }
+        } else {
+            $grants = \Objectiveweb\Auth::ANONYMOUS;
         }
 
-        $user = $this->auth->user();
-        $roleField = $this->auth->params['roles'] ?? 'roles';
-        $roles = $user[$roleField] ?? [];
-        if (is_string($roles)) {
-            $roles = explode(',', $roles);
-        }
-
-        if (count(array_intersect($this->roles, is_array($roles) ? $roles : [])) === 0) {
-            throw new AuthException('Forbidden', 403);
+        if (count(array_intersect($this->roles, $grants)) === 0) {
+            $isAnonymous = count(array_intersect($grants, \Objectiveweb\Auth::ANONYMOUS)) > 0;
+            throw new AuthException('Forbidden', $isAnonymous ? 401 : 403);
         }
 
         return $params;

@@ -28,6 +28,7 @@ class DBAuth extends \Objectiveweb\Auth
         ];
 
         parent::__construct(array_merge($defaults, $params));
+        $this->assertRoleConfig();
     }
 
     public function query($params = array(), $operator = "OR")
@@ -125,17 +126,16 @@ class DBAuth extends \Objectiveweb\Auth
         $profile = !empty($data['profile']) ? json_encode($data['profile']) : null;
         unset($data['profile']);
 
-        $roleField = $this->params['roles'] ?? 'roles';
+        $roleField = $this->params['roles'];
         $syncRoles = array_key_exists($roleField, $data);
-        $roles = $syncRoles ? $this->normalizeRoleNames($data[$roleField]) : [];
+        $roles = ($syncRoles && is_array($data[$roleField])) ? $data[$roleField] : [];
         unset($data[$roleField]);
+        if ($syncRoles && !$this->rolesEnabled()) {
+            throw new \InvalidArgumentException('Role sync requested but role tables are disabled');
+        }
 
         $fields = [];
         foreach ($data as $key => $value) {
-            if ($key === $this->params['scopes'] && is_array($value)) {
-                $fields[$key] = implode(',', $value);
-                continue;
-            }
             $fields[$key] = is_array($value) ? json_encode($value) : $value;
         }
 
@@ -149,15 +149,11 @@ class DBAuth extends \Objectiveweb\Auth
         }
 
         if ($this->params['token']) {
-            $fields[$this->params['token']] = self::hash();
+            $fields[$this->params['token']] = null;
         }
 
         if ($this->params['created']) {
             $fields[$this->params['created']] = date('Y-m-d H:i:s');
-        }
-
-        if (!array_key_exists($this->params['scopes'], $fields)) {
-            $fields[$this->params['scopes']] = '';
         }
 
         return $this->db->transaction(function () use ($uid, $provider, $profile, $fields, $syncRoles, $roles): array {
@@ -215,21 +211,31 @@ class DBAuth extends \Objectiveweb\Auth
             throw new UserException('Token support is disabled', 400);
         }
 
-        $user = $this->get($token, $this->params['token']);
+        $user = $this->findUserByResetToken((string) $token);
+        if ($user === null) {
+            throw new UserException('Hash not found', 404);
+        }
+
+        $payload = [
+            $this->params['password'] => self::hash($password),
+            $this->params['token'] => null,
+        ];
+        $tokenExpiresField = $this->params['token_expires_field'];
+        if (is_string($tokenExpiresField) && $tokenExpiresField !== '') {
+            $payload[$tokenExpiresField] = null;
+        }
+
         $updated = $this->db->update(
             $this->params['table'],
-            [
-                $this->params['password'] => self::hash($password),
-                $this->params['token'] => null,
-            ],
-            [$this->params['token'] => $token]
+            $payload,
+            [$this->params['id'] => $user[$this->params['id']]]
         );
 
         if ($updated !== 1) {
             throw new UserException('Hash not found', 404);
         }
 
-        return $user;
+        return $this->get($user[$this->params['id']]);
     }
 
     public function update($user_id, array $data, $key = 'id')
@@ -254,16 +260,15 @@ class DBAuth extends \Objectiveweb\Auth
             unset($data[$this->params['uuid']]);
         }
 
-        $roleField = $this->params['roles'] ?? 'roles';
+        $roleField = $this->params['roles'];
         $syncRoles = array_key_exists($roleField, $data);
-        $roles = $syncRoles ? $this->normalizeRoleNames($data[$roleField]) : [];
+        $roles = ($syncRoles && is_array($data[$roleField])) ? $data[$roleField] : [];
         unset($data[$roleField]);
+        if ($syncRoles && !$this->rolesEnabled()) {
+            throw new \InvalidArgumentException('Role sync requested but role tables are disabled');
+        }
 
         if (!empty($data)) {
-            if (isset($data[$this->params['scopes']]) && is_array($data[$this->params['scopes']])) {
-                $data[$this->params['scopes']] = implode(',', $data[$this->params['scopes']]);
-            }
-
             foreach ($data as $k => $v) {
                 if (is_array($v)) {
                     $data[$k] = json_encode($v);
@@ -313,9 +318,17 @@ class DBAuth extends \Objectiveweb\Auth
         }
 
         $token = self::hash();
+        $tokenHash = self::hash($token);
+        $payload = [$this->params['token'] => $tokenHash];
+        $tokenExpiresField = $this->params['token_expires_field'];
+        if (is_string($tokenExpiresField) && $tokenExpiresField !== '') {
+            $ttl = max(60, (int) $this->params['token_ttl']);
+            $payload[$tokenExpiresField] = date('Y-m-d H:i:s', time() + $ttl);
+        }
+
         $updated = $this->db->update(
             $this->params['table'],
-            [$this->params['token'] => $token],
+            $payload,
             [$this->params['id'] => $user_id]
         );
 
@@ -355,12 +368,19 @@ class DBAuth extends \Objectiveweb\Auth
             $profile = json_encode($profile);
         }
 
-        $data = ['profile' => $profile];
+        $data = [];
+        if ($profile !== null) {
+            $data['profile'] = $profile;
+        }
         if (!empty($this->params['credentials_last_login'])) {
             $data[$this->params['credentials_last_login']] = date('Y-m-d H:i:s');
         }
 
         if ($this->get_credential($provider, $uid)) {
+            if (empty($data)) {
+                return true;
+            }
+
             $this->db->update($this->params['credentials_table'], $data, [
                 'provider' => $provider,
                 'uid' => $uid,
@@ -390,8 +410,8 @@ class DBAuth extends \Objectiveweb\Auth
             ['user_id' => $user[$this->params['id']]]
         )->all();
 
-        $lastLoginField = $this->params['credentials_last_login'] ?? null;
-        $createdField = $this->params['credentials_created'] ?? null;
+        $lastLoginField = $this->params['credentials_last_login'];
+        $createdField = $this->params['credentials_created'];
 
         $result = [];
         foreach ($rows as $row) {
@@ -425,31 +445,11 @@ class DBAuth extends \Objectiveweb\Auth
         return $result;
     }
 
-    private function normalizeUserRow(array $row): array
-    {
-        $scopeField = $this->params['scopes'];
-        $scopes = $row[$scopeField] ?? [];
-
-        if (is_string($scopes)) {
-            $scopes = explode(',', $scopes);
-        } elseif (!is_array($scopes)) {
-            $scopes = [];
-        }
-
-        $row[$scopeField] = array_values(array_filter(array_map(
-            fn (mixed $scope): string => trim((string) $scope),
-            $scopes
-        )));
-
-        return $row;
-    }
-
     private function hydrateUserRow(array $row): array
     {
-        $row = $this->normalizeUserRow($row);
         $row = $this->hydrateEagerRelations($row);
 
-        $roleField = $this->params['roles'] ?? 'roles';
+        $roleField = $this->params['roles'];
         $row[$roleField] = $this->loadUserRoles($row[$this->params['id']]);
 
         return $row;
@@ -460,18 +460,27 @@ class DBAuth extends \Objectiveweb\Auth
         return !empty($this->params['roles_table']) && !empty($this->params['user_roles_table']);
     }
 
+    private function assertRoleConfig(): void
+    {
+        $rolesTable = $this->params['roles_table'];
+        $userRolesTable = $this->params['user_roles_table'];
+        if (($rolesTable && !$userRolesTable) || (!$rolesTable && $userRolesTable)) {
+            throw new \InvalidArgumentException('Both roles_table and user_roles_table must be configured together');
+        }
+    }
+
     private function loadUserRoles(int|string $userId): array
     {
         if (!$this->rolesEnabled()) {
             return [];
         }
 
-        $roleName = $this->assertIdentifier((string) $this->params['role_name']);
-        $roleId = $this->assertIdentifier((string) $this->params['role_id']);
-        $rolesTable = $this->assertIdentifier((string) $this->params['roles_table']);
-        $userRolesTable = $this->assertIdentifier((string) $this->params['user_roles_table']);
-        $userRolesUserId = $this->assertIdentifier((string) $this->params['user_roles_user_id']);
-        $userRolesRoleId = $this->assertIdentifier((string) $this->params['user_roles_role_id']);
+        $roleName = (string) $this->params['role_name'];
+        $roleId = (string) $this->params['role_id'];
+        $rolesTable = (string) $this->params['roles_table'];
+        $userRolesTable = (string) $this->params['user_roles_table'];
+        $userRolesUserId = (string) $this->params['user_roles_user_id'];
+        $userRolesRoleId = (string) $this->params['user_roles_role_id'];
 
         $query = $this->db->query(
             sprintf(
@@ -551,22 +560,6 @@ class DBAuth extends \Objectiveweb\Auth
         return array_values(array_unique($roleIds));
     }
 
-    private function normalizeRoleNames(mixed $roles): array
-    {
-        if (is_string($roles)) {
-            $roles = explode(',', $roles);
-        }
-
-        if (!is_array($roles)) {
-            return [];
-        }
-
-        return array_values(array_unique(array_filter(array_map(
-            fn (mixed $role): string => trim((string) $role),
-            $roles
-        ))));
-    }
-
     protected function userCanRelation(int $subjectId, string $resourceType, int $resourceId, string $ability): bool
     {
         $relation = $this->getRelationConfig($resourceType);
@@ -621,7 +614,7 @@ class DBAuth extends \Objectiveweb\Auth
 
     private function getRelationConfig(string $resourceType): ?array
     {
-        $relations = $this->params['relations'] ?? [];
+        $relations = $this->params['relations'];
         $relation = $relations[$resourceType] ?? null;
         if (!is_array($relation)) {
             return null;
@@ -684,7 +677,7 @@ class DBAuth extends \Objectiveweb\Auth
 
     private function hydrateEagerRelations(array $row): array
     {
-        $relations = $this->params['relations'] ?? [];
+        $relations = $this->params['relations'];
         if (!is_array($relations)) {
             return $row;
         }
@@ -763,13 +756,33 @@ class DBAuth extends \Objectiveweb\Auth
         return $ids;
     }
 
-    private function assertIdentifier(string $value): string
+    private function findUserByResetToken(string $token): ?array
     {
-        if (!preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $value)) {
-            throw new \InvalidArgumentException("Invalid SQL identifier `$value`");
+        $table = (string) $this->params['table'];
+        $tokenField = (string) $this->params['token'];
+        $tokenExpiresField = $this->params['token_expires_field'];
+        $params = [];
+
+        $sql = sprintf('SELECT * FROM %s WHERE %s IS NOT NULL', $table, $tokenField);
+        if (is_string($tokenExpiresField) && $tokenExpiresField !== '') {
+            $sql .= sprintf(' AND %s >= :now', $tokenExpiresField);
+            $params['now'] = date('Y-m-d H:i:s');
         }
 
-        return $value;
+        $query = $this->db->query($sql);
+        $query->exec($params);
+        foreach ($query->all() as $row) {
+            $candidateHash = (string) ($row[$this->params['token']] ?? '');
+            if ($candidateHash === '') {
+                continue;
+            }
+
+            if (\password_verify($token, $candidateHash)) {
+                return $row;
+            }
+        }
+
+        return null;
     }
 
     private function uuidV4(): string

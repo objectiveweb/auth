@@ -23,10 +23,10 @@ class DBAuthSqliteTest extends TestCase
                 uuid TEXT NOT NULL UNIQUE,
                 name TEXT,
                 image TEXT,
-                scopes TEXT,
                 created TEXT,
                 password TEXT,
-                token TEXT
+                token TEXT,
+                token_expires_at TEXT
             )'
         )->exec();
 
@@ -218,10 +218,24 @@ class DBAuthSqliteTest extends TestCase
         $this->assertSame($user['id'], $account['user_id']);
 
         $token = self::$auth->update_token($account['user_id']);
+        $stored = self::$db->select('auth_user', ['id' => $account['user_id']], ['limit' => 1])->fetch();
+        $this->assertIsString($stored['token']);
+        $this->assertTrue(password_verify($token, $stored['token']));
+        $this->assertNotNull($stored['token_expires_at']);
         self::$auth->passwd_reset($token, 'final-secret');
 
         $logged = self::$auth->login('alice@example.com', 'final-secret');
         $this->assertSame($user['id'], $logged['id']);
+    }
+
+    public function testPasswdResetRejectsExpiredToken(): void
+    {
+        $user = self::$auth->register('expired@example.com', 'secret');
+        $token = self::$auth->update_token($user['id']);
+        self::$db->update('auth_user', ['token_expires_at' => '2000-01-01 00:00:00'], ['id' => $user['id']]);
+
+        $this->expectException(UserException::class);
+        self::$auth->passwd_reset($token, 'new-secret');
     }
 
     public function testDelete(): void
@@ -254,22 +268,19 @@ class DBAuthSqliteTest extends TestCase
         }
     }
 
-    public function testUserCanChecksScopesAndRoles(): void
+    public function testUserCanChecksRoles(): void
     {
         self::$auth->register('scoped@example.com', 'secret', [
-            'scopes' => ['profile:read'],
             'roles' => ['admin'],
         ]);
 
         self::$auth->login('scoped@example.com', 'secret');
 
-        $this->assertTrue(self::$auth->user_can('profile:read'));
         $this->assertTrue(self::$auth->user_can('admin'));
         $this->assertFalse(self::$auth->user_can('operator'));
 
         $current = self::$auth->user();
         $this->assertSame(['admin'], $current['roles']);
-        $this->assertSame(['profile:read'], $current['scopes']);
     }
 
     public function testUpdateRolesReplacesAssignments(): void
@@ -489,5 +500,16 @@ class DBAuthSqliteTest extends TestCase
 
         $this->expectException(\InvalidArgumentException::class);
         self::$auth->user_can('manage', 'invoice', 1);
+    }
+
+    public function testRoleTablesMustBeConfiguredTogether(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        new DBAuth(self::$db, [
+            'table' => 'auth_user',
+            'credentials_table' => 'auth_credentials',
+            'roles_table' => 'auth_role',
+            'user_roles_table' => null,
+        ]);
     }
 }

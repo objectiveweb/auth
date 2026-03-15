@@ -23,7 +23,6 @@ class UserControllerTest extends TestCase
                 uuid TEXT NOT NULL UNIQUE,
                 name TEXT,
                 image TEXT,
-                scopes TEXT,
                 created TEXT,
                 password TEXT,
                 token TEXT

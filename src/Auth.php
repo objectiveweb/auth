@@ -5,7 +5,7 @@ namespace Objectiveweb;
 abstract class Auth
 {
 
-    // Base scopes
+    // Base access markers
     const ANONYMOUS = ['anon'];
     const AUTHENTICATED = ['auth'];
     const ALL = ['anon', 'auth'];
@@ -18,11 +18,14 @@ abstract class Auth
             'session_key' => 'ow_auth',
             'id' => 'id',
             'password' => 'password',
-            'scopes' => 'scopes',
             'roles' => 'roles',
             'login_providers' => ['local', 'email'],
             'token' => NULL, // Name of the field that should store user tokens
+            'token_expires_field' => 'token_expires_at',
+            'token_ttl' => 3600,
             'register_scope' => Auth::ANONYMOUS, // who is allowed to use /register
+            'register_allow_grants' => false,
+            'recovery_providers' => ['local', 'email', 'phone'],
             'register_callback' => null,
             'token_callback' => null,
         ];
@@ -51,7 +54,15 @@ abstract class Auth
     public function user_can(string $ability, mixed ...$args): bool|array
     {
         if (count($args) === 0) {
-            return $this->hasGlobalGrant($ability);
+            if (!$this->check()) {
+                return false;
+            }
+
+            $user = $this->user();
+            $roleField = $this->params['roles'];
+            $roles = is_array($user[$roleField] ?? null) ? $user[$roleField] : [];
+
+            return in_array($ability, $roles, true);
         }
 
         $mode = null;
@@ -95,41 +106,9 @@ abstract class Auth
         return $this->userCanRelation($subjectId, $args[0], $args[1], $ability);
     }
 
-    private function hasGlobalGrant(string $ability): bool
-    {
-        if (!$this->check()) {
-            return false;
-        }
-
-        $grants = $this->globalGrants();
-        return in_array($ability, $grants, true);
-    }
-
-    private function globalGrants(): array
-    {
-        $user = $this->user();
-        $grants = [];
-
-        $scopeField = $this->params['scopes'] ?? 'scopes';
-        if (!empty($user[$scopeField])) {
-            $grants = is_array($user[$scopeField]) ? $user[$scopeField] : explode(',', (string) $user[$scopeField]);
-        }
-
-        $roleField = $this->params['roles'] ?? 'roles';
-        if (!empty($user[$roleField])) {
-            $roles = is_array($user[$roleField]) ? $user[$roleField] : explode(',', (string) $user[$roleField]);
-            $grants = array_merge($grants, $roles);
-        }
-
-        return array_values(array_unique(array_filter(array_map(
-            fn (mixed $grant): string => trim((string) $grant),
-            $grants
-        ))));
-    }
-
     private function currentUserId(): ?int
     {
-        $idField = $this->params['id'] ?? 'id';
+        $idField = $this->params['id'];
         $user = $this->user();
         $id = $user[$idField] ?? null;
         if (is_int($id)) {
@@ -191,7 +170,7 @@ abstract class Auth
             $this->user($user);
 
             // TODO add login ip
-            $this->update_credential($user[$this->params['id']], (string) $provider, $uid, []);
+            $this->update_credential($user[$this->params['id']], (string) $provider, $uid, null);
 
             return $user;
         } else {
