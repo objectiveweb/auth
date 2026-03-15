@@ -269,6 +269,23 @@ class BasicAuth extends \Objectiveweb\Auth
         return $result;
     }
 
+    public function get_users_by_role($roleName): array
+    {
+        $roleField = $this->params['roles'];
+        $matches = [];
+
+        foreach ($this->users as $user) {
+            $roles = $user[$roleField] ?? [];
+            if (!is_array($roles) || !in_array($roleName, $roles, true)) {
+                continue;
+            }
+
+            $matches[] = $this->publicUser($user);
+        }
+
+        return $matches;
+    }
+
     public function update_credential($userid, $provider, $uid, $profile = null)
     {
         if (is_array($profile)) {

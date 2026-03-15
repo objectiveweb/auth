@@ -323,6 +323,14 @@ abstract class Auth
     abstract public function get_credentials($user_id, $key = 'id'): array;
 
     /**
+     * List all users that have the given role name.
+     *
+     * @param string $roleName
+     * @return array<int,array<string,mixed>>
+     */
+    abstract public function get_users_by_role($roleName): array;
+
+    /**
      * Inserts a new account on $userid, or update the existing one
      *
      * @param $userid
