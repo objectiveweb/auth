@@ -527,6 +527,21 @@ class DBAuth extends \Objectiveweb\Auth
         }, $rows));
     }
 
+    public function get_roles(): array
+    {
+        if (!$this->rolesEnabled()) {
+            return [];
+        }
+
+        $rolesTable = (string) $this->params['roles_table'];
+        $roleIdField = (string) $this->params['role_id'];
+        $roleNameField = (string) $this->params['role_name'];
+
+        return $this->db->select(
+            $rolesTable
+        )->map($roleIdField);
+    }
+
     private function hydrateUserRow(array $row): array
     {
         $row = $this->hydrateEagerRelations($row);
