@@ -331,6 +331,13 @@ abstract class Auth
     abstract public function get_users_by_role($roleName): array;
 
     /**
+     * List all available role names.
+     *
+     * @return array<int,string>
+     */
+    abstract public function get_roles(): array;
+
+    /**
      * Inserts a new account on $userid, or update the existing one
      *
      * @param $userid
