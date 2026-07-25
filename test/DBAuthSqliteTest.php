@@ -26,7 +26,8 @@ class DBAuthSqliteTest extends TestCase
                 created TEXT,
                 password TEXT,
                 token TEXT,
-                token_expires_at TEXT
+                token_expires_at TEXT,
+                disabled_at TEXT
             )'
         )->exec();
 
@@ -75,6 +76,14 @@ class DBAuthSqliteTest extends TestCase
             )'
         )->exec();
 
+        self::$db->query(
+            'CREATE TABLE managed_items (
+                user_id INTEGER NOT NULL,
+                item_id INTEGER NOT NULL,
+                PRIMARY KEY(user_id, item_id)
+            )'
+        )->exec();
+
         self::$auth = new DBAuth(self::$db, [
             'table' => 'auth_user',
             'credentials_table' => 'auth_credentials',
@@ -83,6 +92,7 @@ class DBAuthSqliteTest extends TestCase
             'credentials_last_login' => 'last_login',
             'credentials_created' => 'created',
             'roles' => 'roles',
+            'disabled_at' => 'disabled_at',
             'roles_table' => 'auth_role',
             'user_roles_table' => 'auth_user_role',
             'relations' => [
@@ -91,12 +101,20 @@ class DBAuthSqliteTest extends TestCase
                     'subject_key' => 'user_id',
                     'target_key' => 'target_user_id',
                     'ability_key' => 'ability',
+                    'target_is_user' => true,
                 ],
                 'item' => [
                     'table' => 'item_users',
                     'subject_key' => 'user_id',
                     'target_key' => 'item_id',
                     'ability_key' => 'ability',
+                ],
+            ],
+            'managed_relations' => [
+                'items' => [
+                    'table' => 'managed_items',
+                    'subject_key' => 'user_id',
+                    'target_key' => 'item_id',
                 ],
             ],
         ]);
@@ -110,6 +128,7 @@ class DBAuthSqliteTest extends TestCase
         self::$db->query('DELETE FROM auth_role')->exec();
         self::$db->query('DELETE FROM user_delegations')->exec();
         self::$db->query('DELETE FROM item_users')->exec();
+        self::$db->query('DELETE FROM managed_items')->exec();
         self::$db->query('DELETE FROM auth_user')->exec();
     }
 
@@ -601,5 +620,72 @@ class DBAuthSqliteTest extends TestCase
             'roles_table' => 'auth_role',
             'user_roles_table' => null,
         ]);
+    }
+
+    public function testSuspendedUserCannotLoginAndExistingSessionIsInvalidated(): void
+    {
+        $user = self::$auth->register('suspended@example.com', 'secret');
+        self::$auth->login('suspended@example.com', 'secret');
+        self::$auth->update($user['id'], ['disabled_at' => '2026-07-25 12:00:00']);
+
+        $this->assertFalse(self::$auth->revalidate());
+        $this->assertFalse(self::$auth->check());
+
+        $this->expectException(AuthException::class);
+        $this->expectExceptionCode(403);
+        self::$auth->login('suspended@example.com', 'secret');
+    }
+
+    public function testCredentialLifecycleEnforcesOwnershipUniquenessAndLastCredential(): void
+    {
+        $alice = self::$auth->register('alice@example.com', 'secret');
+        $bob = self::$auth->register('bob@example.com', 'secret');
+        self::$auth->create_credential($alice['id'], 'local', 'alice.secondary@example.com');
+        $renamed = self::$auth->rename_credential(
+            $alice['id'],
+            'local',
+            'alice.secondary@example.com',
+            'local',
+            'alice.renamed@example.com'
+        );
+        $this->assertSame('alice.renamed@example.com', $renamed['uid']);
+        self::$auth->delete_credential($alice['id'], 'local', 'alice.renamed@example.com');
+
+        try {
+            self::$auth->create_credential($bob['id'], 'local', 'alice@example.com');
+            $this->fail('Expected duplicate credential rejection');
+        } catch (UserException $exception) {
+            $this->assertSame(409, $exception->getCode());
+        }
+
+        $this->expectException(UserException::class);
+        $this->expectExceptionCode(409);
+        self::$auth->delete_credential($alice['id'], 'local', 'alice@example.com');
+    }
+
+    public function testManagedRelationsSynchronizeAndDeletionCleansBothDelegationSides(): void
+    {
+        $actor = self::$auth->register('actor@example.com', 'secret');
+        $target = self::$auth->register('target@example.com', 'secret');
+        self::$auth->sync_managed_relations($actor['id'], ['items' => [8, 3, 8]]);
+        $this->assertEqualsCanonicalizing([3, 8], self::$auth->get_managed_relations($actor['id'])['items']);
+
+        self::$db->insert('user_delegations', [
+            'user_id' => $actor['id'],
+            'target_user_id' => $target['id'],
+            'ability' => 'manage',
+        ]);
+        self::$auth->delete($target['id']);
+        $this->assertSame(0, self::$db->count('user_delegations', []));
+    }
+
+    public function testRoleNamesAndCredentialUidSearchAreNormalized(): void
+    {
+        self::$auth->register('searchable@example.com', 'secret', ['roles' => ['partner']]);
+        $this->assertSame(['partner'], self::$auth->get_roles());
+
+        $result = self::$auth->query(['q' => 'searchable@example.com', 'size' => 10]);
+        $this->assertSame(1, $result['page']['totalElements']);
+        $this->assertSame('searchable@example.com', $result['_embedded']['auth_user'][0]['credentials'][0]['uid']);
     }
 }

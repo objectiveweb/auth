@@ -35,40 +35,65 @@ class DBAuth extends \Objectiveweb\Auth
     {
         $page = max(0, (int) ($params['page'] ?? 0));
         $size = max(1, (int) ($params['size'] ?? 20));
-        $sort = $params['sort'] ?? null;
+        $sort = (string) ($params['sort'] ?? ($this->params['id'] . ' ASC'));
+        $q = trim((string) ($params['q'] ?? ''));
+        $role = trim((string) ($params['role'] ?? ''));
+        $status = trim((string) ($params['status'] ?? ''));
+        unset($params['page'], $params['size'], $params['sort'], $params['q'], $params['role'], $params['status']);
 
-        unset($params['page'], $params['size'], $params['sort']);
+        // Management datasets are deliberately hydrated before filtering. This
+        // keeps credential UID and managed-relation search portable across the
+        // DB abstraction's supported engines and avoids accidental inner joins
+        // that hide users without roles.
+        $rows = $this->db->select($this->params['table'])->all();
+        $data = [];
+        foreach ($rows as $row) {
+            $hydrated = $this->hydrateUserRow($row);
+            if (!$this->matchesUserFilters($hydrated, $params, $operator)) {
+                continue;
+            }
 
-        if (strtoupper($operator) === 'OR' && count($params) > 1) {
-            $rowsById = [];
-            foreach ($params as $key => $value) {
-                $rows = $this->db->select($this->params['table'], [$key => $value], [
-                    'order' => $sort,
-                ])->all();
-
-                foreach ($rows as $row) {
-                    if (!isset($row[$this->params['id']])) {
-                        continue;
-                    }
-                    $rowsById[$row[$this->params['id']]] = $this->hydrateUserRow($row);
+            $credentials = $this->get_credentials($hydrated[$this->params['id']]);
+            if ($q !== '') {
+                $haystack = strtolower(implode(' ', array_merge(
+                    [
+                        (string) ($hydrated['name'] ?? ''),
+                        (string) ($hydrated[$this->params['id']] ?? ''),
+                    ],
+                    array_map(fn (array $credential): string => (string) ($credential['uid'] ?? ''), $credentials)
+                )));
+                if (!str_contains($haystack, strtolower($q))) {
+                    continue;
                 }
             }
 
-            $data = array_values($rowsById);
-            $count = count($data);
-            $slice = array_slice($data, $page * $size, $size);
-        } else {
-            $filter = $params;
-            $queryParams = [
-                'order' => $sort,
-                'offset' => $page * $size,
-                'limit' => $size,
-            ];
+            $roles = is_array($hydrated[$this->params['roles']] ?? null)
+                ? $hydrated[$this->params['roles']]
+                : [];
+            if ($role === 'unassigned' && $roles !== []) {
+                continue;
+            }
+            if ($role !== '' && $role !== 'unassigned' && !in_array($role, $roles, true)) {
+                continue;
+            }
+            if ($status === 'active' && !$this->is_active($hydrated)) {
+                continue;
+            }
+            if ($status === 'suspended' && $this->is_active($hydrated)) {
+                continue;
+            }
 
-            $slice = $this->db->select($this->params['table'], $filter, $queryParams)->all();
-            $slice = array_map(fn (array $row): array => $this->hydrateUserRow($row), $slice);
-            $count = $this->db->count($this->params['table'], $filter);
+            $hydrated['credentials'] = $credentials;
+            $data[] = $hydrated;
         }
+
+        [$sortField, $sortDirection] = array_pad(preg_split('/\s+/', trim($sort), 2), 2, 'ASC');
+        usort($data, static function (array $a, array $b) use ($sortField, $sortDirection): int {
+            $comparison = ($a[$sortField] ?? null) <=> ($b[$sortField] ?? null);
+            return strtoupper($sortDirection) === 'DESC' ? -$comparison : $comparison;
+        });
+        $count = count($data);
+        $slice = array_slice($data, $page * $size, $size);
 
         return [
             '_embedded' => [
@@ -157,6 +182,9 @@ class DBAuth extends \Objectiveweb\Auth
         }
 
         return $this->db->transaction(function () use ($uid, $provider, $profile, $fields, $syncRoles, $roles): array {
+            if ($syncRoles) {
+                $this->resolveRoleIds($roles);
+            }
             $id = $this->db->insert($this->params['table'], $fields);
             if (!$id) {
                 throw new \Exception('Could not create user');
@@ -280,6 +308,7 @@ class DBAuth extends \Objectiveweb\Auth
 
         if ($syncRoles) {
             $target = $this->get($user_id, $key);
+            $this->resolveRoleIds($roles);
             $this->syncUserRoles($target[$this->params['id']], $roles);
         }
     }
@@ -294,6 +323,16 @@ class DBAuth extends \Objectiveweb\Auth
         }
 
         return $this->db->transaction(function () use ($user_id): bool {
+            $guard = $this->params['deletion_guard_callback'];
+            if (is_callable($guard)) {
+                $result = call_user_func($guard, $user_id);
+                if ($result === false || is_string($result)) {
+                    throw new UserException(
+                        is_string($result) ? $result : 'User has application history',
+                        409
+                    );
+                }
+            }
             $this->db->delete($this->params['credentials_table'], ['user_id' => $user_id]);
             if ($this->rolesEnabled()) {
                 $this->db->delete(
@@ -301,6 +340,24 @@ class DBAuth extends \Objectiveweb\Auth
                     [$this->params['user_roles_user_id'] => $user_id]
                 );
             }
+            foreach ((array) $this->params['managed_relations'] as $relation) {
+                if (!is_array($relation) || empty($relation['table']) || empty($relation['subject_key'])) {
+                    continue;
+                }
+                $this->db->delete((string) $relation['table'], [(string) $relation['subject_key'] => $user_id]);
+            }
+            foreach ((array) $this->params['relations'] as $relation) {
+                if (!is_array($relation) || empty($relation['table'])) {
+                    continue;
+                }
+                if (!empty($relation['subject_key'])) {
+                    $this->db->delete((string) $relation['table'], [(string) $relation['subject_key'] => $user_id]);
+                }
+                if (!empty($relation['target_key']) && ($relation['target_is_user'] ?? false)) {
+                    $this->db->delete((string) $relation['table'], [(string) $relation['target_key'] => $user_id]);
+                }
+            }
+            $this->audit('user.deleted', $user_id);
             $deleted = $this->db->delete($this->params['table'], [$this->params['id'] => $user_id]);
 
             if ($deleted !== 1) {
@@ -376,7 +433,11 @@ class DBAuth extends \Objectiveweb\Auth
             $data[$this->params['credentials_last_login']] = date('Y-m-d H:i:s');
         }
 
-        if ($this->get_credential($provider, $uid)) {
+        $existing = $this->get_credential($provider, $uid);
+        if ($existing && ($existing['user_id'] ?? null) != $userid) {
+            throw new UserException('Credential already registered', 409);
+        }
+        if ($existing) {
             if (empty($data)) {
                 return true;
             }
@@ -400,6 +461,119 @@ class DBAuth extends \Objectiveweb\Auth
 
         $this->db->insert($this->params['credentials_table'], $data);
         return true;
+    }
+
+    public function create_credential($userid, string $provider, string $uid, mixed $profile = null): array
+    {
+        $this->get($userid);
+        $provider = trim($provider);
+        $uid = trim($uid);
+        if ($provider === '' || $uid === '') {
+            throw new UserException('Provider and uid are required', 400);
+        }
+        if ($this->get_credential($provider, $uid)) {
+            throw new UserException('Credential already registered', 409);
+        }
+        $this->update_credential($userid, $provider, $uid, $profile);
+        return $this->get_credential($provider, $uid);
+    }
+
+    public function rename_credential(
+        $userid,
+        string $provider,
+        string $uid,
+        string $newProvider,
+        string $newUid
+    ): array {
+        $credential = $this->get_credential($provider, $uid);
+        if (!$credential || ($credential['user_id'] ?? null) != $userid) {
+            throw new UserException('Credential not found', 404);
+        }
+        $newProvider = trim($newProvider);
+        $newUid = trim($newUid);
+        if ($newProvider === '' || $newUid === '') {
+            throw new UserException('Provider and uid are required', 400);
+        }
+        $duplicate = $this->get_credential($newProvider, $newUid);
+        if (
+            ($provider !== $newProvider || $uid !== $newUid)
+            && $duplicate
+        ) {
+            throw new UserException('Credential already registered', 409);
+        }
+        $this->db->update($this->params['credentials_table'], [
+            'provider' => $newProvider,
+            'uid' => $newUid,
+        ], [
+            'user_id' => $userid,
+            'provider' => $provider,
+            'uid' => $uid,
+        ]);
+        return $this->get_credential($newProvider, $newUid);
+    }
+
+    public function delete_credential($userid, string $provider, string $uid): bool
+    {
+        $credential = $this->get_credential($provider, $uid);
+        if (!$credential || ($credential['user_id'] ?? null) != $userid) {
+            throw new UserException('Credential not found', 404);
+        }
+        if (count($this->get_credentials($userid)) <= 1) {
+            throw new UserException('A user must have at least one credential', 409);
+        }
+        $this->db->delete($this->params['credentials_table'], [
+            'user_id' => $userid,
+            'provider' => $provider,
+            'uid' => $uid,
+        ]);
+        return true;
+    }
+
+    public function get_managed_relations($userId): array
+    {
+        $user = $this->get($userId);
+        $id = $user[$this->params['id']];
+        $result = [];
+        foreach ((array) $this->params['managed_relations'] as $name => $relation) {
+            if (!is_array($relation) || empty($relation['table']) || empty($relation['subject_key']) || empty($relation['target_key'])) {
+                continue;
+            }
+            $rows = $this->db->select((string) $relation['table'], [
+                (string) $relation['subject_key'] => $id,
+            ])->all();
+            $values = array_map(
+                fn (array $row): mixed => $row[(string) $relation['target_key']] ?? null,
+                $rows
+            );
+            $result[(string) $name] = array_values(array_unique(array_filter($values, fn ($value): bool => $value !== null)));
+        }
+        return $result;
+    }
+
+    public function sync_managed_relations($userId, array $relations): array
+    {
+        $user = $this->get($userId);
+        $id = $user[$this->params['id']];
+        return $this->db->transaction(function () use ($id, $relations): array {
+            foreach ($relations as $name => $values) {
+                $relation = $this->params['managed_relations'][$name] ?? null;
+                if (!is_array($relation) || !is_array($values)) {
+                    throw new UserException("Invalid managed relation `$name`", 400);
+                }
+                $values = array_values(array_unique($values));
+                if (is_callable($relation['validate_callback'] ?? null)) {
+                    call_user_func($relation['validate_callback'], $values);
+                }
+                $table = (string) $relation['table'];
+                $subjectKey = (string) $relation['subject_key'];
+                $targetKey = (string) $relation['target_key'];
+                $this->db->delete($table, [$subjectKey => $id]);
+                foreach ($values as $value) {
+                    $this->db->insert($table, [$subjectKey => $id, $targetKey => $value]);
+                }
+            }
+            return $this->get_managed_relations($id);
+        });
     }
 
     public function get_credentials($user_id, $key = 'id'): array
@@ -537,9 +711,11 @@ class DBAuth extends \Objectiveweb\Auth
         $roleIdField = (string) $this->params['role_id'];
         $roleNameField = (string) $this->params['role_name'];
 
-        return $this->db->select(
-            $rolesTable
-        )->map($roleIdField);
+        $rows = $this->db->select($rolesTable, [], ['order' => $roleNameField])->all();
+        return array_values(array_map(
+            fn (array $row): string => (string) ($row[$roleNameField] ?? ''),
+            $rows
+        ));
     }
 
     private function hydrateUserRow(array $row): array
@@ -645,11 +821,7 @@ class DBAuth extends \Objectiveweb\Auth
                 $roleIds[] = ctype_digit((string) $inserted) ? (int) $inserted : $inserted;
                 continue;
             }
-
-            $created = $this->db->select($rolesTable, [$roleNameField => $roleName], ['limit' => 1])->fetch();
-            if ($created && isset($created[$roleIdField])) {
-                $roleIds[] = $created[$roleIdField];
-            }
+            throw new UserException("Unknown role `$roleName`", 400);
         }
 
         return array_values(array_unique($roleIds));
@@ -878,6 +1050,31 @@ class DBAuth extends \Objectiveweb\Auth
         }
 
         return null;
+    }
+
+    private function matchesUserFilters(array $row, array $filters, string $operator): bool
+    {
+        if ($filters === []) {
+            return true;
+        }
+        $matches = [];
+        foreach ($filters as $key => $value) {
+            if ($key === 'uid') {
+                $matches[] = $this->get_credential('local', $value)
+                    && (($this->get_credential('local', $value)['user_id'] ?? null) == ($row[$this->params['id']] ?? null));
+                continue;
+            }
+            $actual = $row[$key] ?? null;
+            if (is_string($value) && str_contains($value, '%')) {
+                $needle = strtolower(str_replace('%', '', $value));
+                $matches[] = str_contains(strtolower((string) $actual), $needle);
+            } else {
+                $matches[] = $actual == $value;
+            }
+        }
+        return strtoupper($operator) === 'AND'
+            ? !in_array(false, $matches, true)
+            : in_array(true, $matches, true);
     }
 
     private function uuidV4(): string

@@ -28,6 +28,14 @@ abstract class Auth
             'recovery_providers' => ['local', 'email', 'phone'],
             'register_callback' => null,
             'token_callback' => null,
+            'invitation_callback' => null,
+            'reset_callback' => null,
+            'audit_callback' => null,
+            'deletion_guard_callback' => null,
+            'disabled_at' => null,
+            'managed_relations' => [],
+            'management_csrf' => true,
+            'management_csrf_session_key' => 'ow_auth_management_csrf',
         ];
 
         $this->params = array_merge($defaults, $params);
@@ -49,6 +57,74 @@ abstract class Auth
     public function check()
     {
         return !empty($_SESSION[$this->params['session_key']]);
+    }
+
+    public function is_active(array $user): bool
+    {
+        $field = $this->params['disabled_at'];
+        return !is_string($field) || $field === '' || empty($user[$field]);
+    }
+
+    /**
+     * Reload the session principal so role and lifecycle changes take effect on
+     * the very next protected request.
+     */
+    public function revalidate(): bool
+    {
+        if (!$this->check()) {
+            return false;
+        }
+
+        try {
+            $user = $this->reload();
+        } catch (\Throwable) {
+            $this->logout();
+            return false;
+        }
+
+        if (!$this->is_active($user)) {
+            $this->logout();
+            return false;
+        }
+
+        return true;
+    }
+
+    public function management_csrf_token(): string
+    {
+        $key = (string) $this->params['management_csrf_session_key'];
+        if (empty($_SESSION[$key]) || !is_string($_SESSION[$key])) {
+            $_SESSION[$key] = bin2hex(random_bytes(32));
+        }
+
+        return $_SESSION[$key];
+    }
+
+    public function audit(string $action, int|string|null $targetUserId, array $metadata = []): void
+    {
+        $callback = $this->params['audit_callback'];
+        if (!is_callable($callback)) {
+            return;
+        }
+
+        $actorId = null;
+        if ($this->check()) {
+            $actorId = $this->user()[$this->params['id']] ?? null;
+        }
+        call_user_func($callback, $actorId, $targetUserId, $action, $metadata);
+    }
+
+    public function invite(int|string $userId, bool $reset = false): void
+    {
+        $user = $this->get($userId);
+        $token = $this->update_token($userId);
+        $credentials = $this->get_credentials($userId);
+        $callback = $this->params[$reset ? 'reset_callback' : 'invitation_callback']
+            ?? ($reset ? $this->params['token_callback'] : $this->params['register_callback']);
+
+        if (is_callable($callback)) {
+            call_user_func($callback, $user, $credentials, $token);
+        }
     }
 
     public function user_can(string $ability, mixed ...$args): bool|array
@@ -158,6 +234,10 @@ abstract class Auth
         }
 
         $user = $this->get($credential['user_id']);
+
+        if (!$this->is_active($user)) {
+            throw new Auth\AuthException('Account suspended', 403);
+        }
 
         if (\password_verify($password, $user[$this->params['password']])) {
 
@@ -348,4 +428,20 @@ abstract class Auth
      * @throws \Exception
      */
     abstract public function update_credential($userid, $provider, $uid, $profile = null);
+
+    abstract public function create_credential($userid, string $provider, string $uid, mixed $profile = null): array;
+
+    abstract public function rename_credential(
+        $userid,
+        string $provider,
+        string $uid,
+        string $newProvider,
+        string $newUid
+    ): array;
+
+    abstract public function delete_credential($userid, string $provider, string $uid): bool;
+
+    abstract public function get_managed_relations($userId): array;
+
+    abstract public function sync_managed_relations($userId, array $relations): array;
 }

@@ -38,6 +38,8 @@ $auth = new DBAuth($db, [
     'roles' => 'roles',
     'login_providers' => ['local', 'email', 'phone'],
     'token' => 'token',
+    'token_expires_field' => 'token_expires_at',
+    'disabled_at' => 'disabled_at',
     'created' => 'created',
     'uuid' => 'uuid',
     'credentials_last_login' => 'last_login',
@@ -49,6 +51,7 @@ $auth = new DBAuth($db, [
             'subject_key' => 'user_id',
             'target_key' => 'target_user_id',
             'ability_key' => 'ability',
+            'target_is_user' => true, // clean both sides on user deletion
         ],
         'item' => [
             'table' => 'item_users',
@@ -60,6 +63,20 @@ $auth = new DBAuth($db, [
 
         ],
     ],
+    'managed_relations' => [
+        'venues' => [
+            'table' => 'venue_users',
+            'subject_key' => 'user_id',
+            'target_key' => 'venue_id',
+            'validate_callback' => fn (array $ids) => validateVenueIds($ids),
+        ],
+    ],
+    'invitation_callback' => function (array $user, array $credentials, string $plainToken): void {
+        // Deliver an application-owned email. Never return the token over HTTP.
+    },
+    'reset_callback' => function (array $user, array $credentials, string $plainToken): void {},
+    'audit_callback' => function ($actorId, $targetId, string $action, array $metadata): void {},
+    'deletion_guard_callback' => fn ($userId): bool|string => true,
 ]);
 ```
 
@@ -120,6 +137,12 @@ CREATE TABLE auth_user_role (
 - `role_id`: role PK column in `roles_table` (default `id`)
 - `role_name`: role name column in `roles_table` (default `name`)
 - `relations`: relationship auth mapping by resource type (default `[]`)
+- `managed_relations`: application-owned many-to-many associations that admins may synchronize
+- `disabled_at`: nullable lifecycle field; non-null users cannot log in and active sessions are rejected on their next protected request
+- `invitation_callback`, `reset_callback`: application delivery callbacks receiving the user, credentials, and one-time plaintext token
+- `audit_callback`: application persistence callback for management events
+- `deletion_guard_callback`: return `true` to allow deletion, or a conflict message/`false` to reject it
+- `management_csrf`: require JSON management writes with `X-CSRF-Token` (default `true`)
 - `relations.<name>.eager`: eager load related rows into user payload (`true` => `[]`, `array` => select params)
 - `created`: optional created-at field
 - `last_login`: optional user last-login field
@@ -218,6 +241,27 @@ $auth->passwd($userId, 'new-password');
 // List all credentials for a user
 $credentials = $auth->get_credentials($userId);
 ```
+
+## User-management API
+
+Register `Objectiveweb\Auth\Controller\UserController` at an application-owned
+prefix such as `/api/users`. It requires the `admin` role and supports:
+
+- searchable, filtered and paginated `GET /api/users` (`q`, `role`,
+  `status`, `page`, `size`, whitelisted `sort`);
+- role and user detail reads;
+- create/invite and profile/role/managed-relation updates;
+- credential create, rename and delete;
+- suspend, activate, invitation and password-reset actions;
+- guarded deletion with relation cleanup.
+
+Management GET responses include a session CSRF token. Send it as
+`X-CSRF-Token` with `Content-Type: application/json` on every write. Setup and
+reset tokens are passed only to delivery callbacks and are never serialized in
+HTTP responses.
+
+Role names accepted by the management API must already exist in the configured
+roles table. Use migrations/seeds for role definitions.
 
 ## Authorization checks (`user_can`)
 

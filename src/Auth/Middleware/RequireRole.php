@@ -26,6 +26,10 @@ class RequireRole implements MiddlewareInterface
 
     public function before(string $method, string $fn, array $params): mixed
     {
+        if ($this->auth->check() && !$this->auth->revalidate()) {
+            throw new AuthException('Forbidden', 401);
+        }
+
         if ($this->auth->check()) {
             $grants = \Objectiveweb\Auth::AUTHENTICATED;
             $user = $this->auth->user();

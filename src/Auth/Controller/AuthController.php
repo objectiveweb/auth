@@ -101,7 +101,12 @@ class AuthController
 
         $user['uid'] = $uid;
 
-        if (is_callable($this->auth->params['register_callback'])) {
+        if (!is_string($password) || $password === '') {
+            // A password-less registration is an invitation. The backend stores
+            // only a hash of the short-lived setup token and delivery happens
+            // through the application callback.
+            $this->auth->invite($user[$this->auth->params['id']]);
+        } elseif (is_callable($this->auth->params['register_callback'])) {
             call_user_func($this->auth->params['register_callback'], $user);
         }
 
