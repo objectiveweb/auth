@@ -96,7 +96,7 @@ class BasicAuthTest extends TestCase
                 ['uid', 'provider', 'profile', 'last_login', 'created'],
                 array_keys($credential)
             );
-            $this->assertNotNull($credential['last_login']);
+            $this->assertArrayHasKey('last_login', $credential);
             $this->assertNotNull($credential['created']);
         }
     }

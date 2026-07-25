@@ -201,7 +201,7 @@ class DBAuth extends \Objectiveweb\Auth
             ];
 
             if (!empty($this->params['credentials_last_login'])) {
-                $credentialPayload[$this->params['credentials_last_login']] = date('Y-m-d H:i:s');
+                $credentialPayload[$this->params['credentials_last_login']] = null;
             }
             if (!empty($this->params['credentials_created'])) {
                 $credentialPayload[$this->params['credentials_created']] = date('Y-m-d H:i:s');
@@ -475,6 +475,15 @@ class DBAuth extends \Objectiveweb\Auth
             throw new UserException('Credential already registered', 409);
         }
         $this->update_credential($userid, $provider, $uid, $profile);
+        if (!empty($this->params['credentials_last_login'])) {
+            $this->db->update($this->params['credentials_table'], [
+                $this->params['credentials_last_login'] => null,
+            ], [
+                'user_id' => $userid,
+                'provider' => $provider,
+                'uid' => $uid,
+            ]);
+        }
         return $this->get_credential($provider, $uid);
     }
 
