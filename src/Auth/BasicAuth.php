@@ -43,14 +43,51 @@ class BasicAuth extends \Objectiveweb\Auth
     {
         $page = max(0, (int) ($params['page'] ?? 0));
         $size = max(1, (int) ($params['size'] ?? 20));
-        unset($params['page'], $params['size'], $params['sort']);
+        $sort = (string) ($params['sort'] ?? ($this->params['id'] . ' ASC'));
+        $q = trim((string) ($params['q'] ?? ''));
+        $role = trim((string) ($params['role'] ?? ''));
+        $status = trim((string) ($params['status'] ?? ''));
+        unset($params['page'], $params['size'], $params['sort'], $params['q'], $params['role'], $params['status']);
 
         $matches = [];
         foreach ($this->users as $row) {
-            if ($this->matchesFilters($row, $params, $operator)) {
-                $matches[] = $this->publicUser($row);
+            if (!$this->matchesFilters($row, $params, $operator)) {
+                continue;
             }
+
+            $credentials = $this->get_credentials($row[$this->params['id']]);
+            if ($q !== '') {
+                $haystack = strtolower(implode(' ', array_merge(
+                    [(string) ($row['name'] ?? ''), (string) ($row[$this->params['id']] ?? '')],
+                    array_map(fn (array $credential): string => (string) $credential['uid'], $credentials)
+                )));
+                if (!str_contains($haystack, strtolower($q))) {
+                    continue;
+                }
+            }
+            $roles = is_array($row[$this->params['roles']] ?? null) ? $row[$this->params['roles']] : [];
+            if ($role === 'unassigned' && $roles !== []) {
+                continue;
+            }
+            if ($role !== '' && $role !== 'unassigned' && !in_array($role, $roles, true)) {
+                continue;
+            }
+            if ($status === 'active' && !$this->is_active($row)) {
+                continue;
+            }
+            if ($status === 'suspended' && $this->is_active($row)) {
+                continue;
+            }
+            $public = $this->publicUser($row);
+            $public['credentials'] = $credentials;
+            $matches[] = $public;
         }
+
+        [$sortField, $sortDirection] = array_pad(preg_split('/\s+/', trim($sort), 2), 2, 'ASC');
+        usort($matches, static function (array $a, array $b) use ($sortField, $sortDirection): int {
+            $comparison = ($a[$sortField] ?? null) <=> ($b[$sortField] ?? null);
+            return strtoupper($sortDirection) === 'DESC' ? -$comparison : $comparison;
+        });
 
         $count = count($matches);
         $slice = array_slice($matches, $page * $size, $size);
@@ -110,6 +147,9 @@ class BasicAuth extends \Objectiveweb\Auth
         $record = $data;
         $record[$idField] = $userId;
         $record['uid'] = $uid;
+        if (is_string($this->params['disabled_at']) && $this->params['disabled_at'] !== '') {
+            $record[$this->params['disabled_at']] = $record[$this->params['disabled_at']] ?? null;
+        }
 
         if ($password !== null && $password !== '') {
             $record[$this->params['password']] = $this->isPasswordHash($password)
@@ -149,12 +189,25 @@ class BasicAuth extends \Objectiveweb\Auth
         }
 
         foreach ($this->users as $userId => $user) {
-            if (($user[$tokenField] ?? null) !== $token) {
+            $hash = (string) ($user[$tokenField] ?? '');
+            if ($hash === '' || !password_verify($token, $hash)) {
+                continue;
+            }
+            $expiresField = $this->params['token_expires_field'];
+            if (
+                is_string($expiresField)
+                && $expiresField !== ''
+                && !empty($user[$expiresField])
+                && strtotime((string) $user[$expiresField]) < time()
+            ) {
                 continue;
             }
 
             $this->users[$userId][$this->params['password']] = self::hash($password);
             $this->users[$userId][$tokenField] = null;
+            if (is_string($expiresField) && $expiresField !== '') {
+                $this->users[$userId][$expiresField] = null;
+            }
 
             return $this->publicUser($this->users[$userId]);
         }
@@ -193,6 +246,7 @@ class BasicAuth extends \Objectiveweb\Auth
             }
         }
 
+        $this->audit('user.deleted', $resolved);
         unset($this->users[$resolved]);
         foreach ($this->credentials as $provider => $records) {
             foreach ($records as $uid => $credential) {
@@ -221,7 +275,14 @@ class BasicAuth extends \Objectiveweb\Auth
         }
 
         $token = self::hash();
-        $this->users[$resolved][$tokenField] = $token;
+        $this->users[$resolved][$tokenField] = self::hash($token);
+        $expiresField = $this->params['token_expires_field'];
+        if (is_string($expiresField) && $expiresField !== '') {
+            $this->users[$resolved][$expiresField] = date(
+                'Y-m-d H:i:s',
+                time() + max(60, (int) $this->params['token_ttl'])
+            );
+        }
         return $token;
     }
 
@@ -312,6 +373,10 @@ class BasicAuth extends \Objectiveweb\Auth
 
     public function update_credential($userid, $provider, $uid, $profile = null)
     {
+        $existing = $this->get_credential($provider, $uid);
+        if ($existing && ($existing['user_id'] ?? null) != $userid) {
+            throw new UserException('Credential already registered', 409);
+        }
         if (is_array($profile)) {
             $profile = json_encode($profile);
         }
@@ -327,6 +392,76 @@ class BasicAuth extends \Objectiveweb\Auth
         ];
 
         return true;
+    }
+
+    public function create_credential($userid, string $provider, string $uid, mixed $profile = null): array
+    {
+        $this->get($userid);
+        $provider = trim($provider);
+        $uid = trim($uid);
+        if ($provider === '' || $uid === '') {
+            throw new UserException('Provider and uid are required', 400);
+        }
+        if ($this->get_credential($provider, $uid)) {
+            throw new UserException('Credential already registered', 409);
+        }
+        $this->update_credential($userid, $provider, $uid, $profile);
+        return $this->get_credential($provider, $uid);
+    }
+
+    public function rename_credential(
+        $userid,
+        string $provider,
+        string $uid,
+        string $newProvider,
+        string $newUid
+    ): array {
+        $credential = $this->get_credential($provider, $uid);
+        if (!$credential || ($credential['user_id'] ?? null) != $userid) {
+            throw new UserException('Credential not found', 404);
+        }
+        if (($provider !== $newProvider || $uid !== $newUid) && $this->get_credential($newProvider, $newUid)) {
+            throw new UserException('Credential already registered', 409);
+        }
+        unset($this->credentials[$provider][$uid]);
+        $this->update_credential($userid, trim($newProvider), trim($newUid), $credential['profile'] ?? null);
+        return $this->get_credential($newProvider, $newUid);
+    }
+
+    public function delete_credential($userid, string $provider, string $uid): bool
+    {
+        $credential = $this->get_credential($provider, $uid);
+        if (!$credential || ($credential['user_id'] ?? null) != $userid) {
+            throw new UserException('Credential not found', 404);
+        }
+        if (count($this->get_credentials($userid)) <= 1) {
+            throw new UserException('A user must have at least one credential', 409);
+        }
+        unset($this->credentials[$provider][$uid]);
+        return true;
+    }
+
+    public function get_managed_relations($userId): array
+    {
+        $this->get($userId);
+        $result = [];
+        foreach ((array) $this->params['managed_relations'] as $name => $_config) {
+            $values = $this->users[$userId]['_managed_relations'][$name] ?? [];
+            $result[$name] = array_values($values);
+        }
+        return $result;
+    }
+
+    public function sync_managed_relations($userId, array $relations): array
+    {
+        $this->get($userId);
+        foreach ($relations as $name => $values) {
+            if (!isset($this->params['managed_relations'][$name]) || !is_array($values)) {
+                throw new UserException("Invalid managed relation `$name`", 400);
+            }
+            $this->users[$userId]['_managed_relations'][$name] = array_values(array_unique($values));
+        }
+        return $this->get_managed_relations($userId);
     }
 
     private function nextId(): int
@@ -391,6 +526,7 @@ class BasicAuth extends \Objectiveweb\Auth
 
     private function publicUser(array $user): array
     {
+        unset($user['_managed_relations']);
         unset($user[$this->params['password']]);
         if ($this->params['token']) {
             unset($user[$this->params['token']]);
