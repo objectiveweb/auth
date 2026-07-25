@@ -166,6 +166,7 @@ class BasicAuth extends \Objectiveweb\Auth
 
         $this->users[$userId] = $record;
         $this->update_credential($userId, $provider, $uid, $profile);
+        $this->credentials[$provider][$uid]['last_login'] = null;
 
         return $this->publicUser($record);
     }
@@ -406,6 +407,7 @@ class BasicAuth extends \Objectiveweb\Auth
             throw new UserException('Credential already registered', 409);
         }
         $this->update_credential($userid, $provider, $uid, $profile);
+        $this->credentials[$provider][$uid]['last_login'] = null;
         return $this->get_credential($provider, $uid);
     }
 
