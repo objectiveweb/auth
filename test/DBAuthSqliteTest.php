@@ -329,6 +329,38 @@ class DBAuthSqliteTest extends TestCase
         self::$auth->passwd_reset($token, 'new-secret');
     }
 
+    public function testPasswdResetUsesConfiguredDatabasePrefix(): void
+    {
+        $db = new DB('sqlite::memory:', null, '', ['prefix' => 'app_']);
+        $db->query(
+            'CREATE TABLE app_user (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                password TEXT,
+                token TEXT,
+                token_expires_at TEXT
+            )'
+        )->exec();
+
+        $auth = new DBAuth($db, [
+            'table' => 'user',
+            'created' => null,
+            'uuid' => null,
+            'token' => 'token',
+            'roles_table' => null,
+            'user_roles_table' => null,
+        ]);
+
+        $userId = $db->insert('user', ['password' => null, 'token' => null, 'token_expires_at' => null]);
+        $token = $auth->update_token($userId);
+        $user = $auth->passwd_reset($token, 'new-secret');
+
+        $this->assertSame((int) $userId, (int) $user['id']);
+        $stored = $db->select('user', ['id' => $userId], ['limit' => 1])->fetch();
+        $this->assertTrue(password_verify('new-secret', $stored['password']));
+        $this->assertNull($stored['token']);
+        $this->assertNull($stored['token_expires_at']);
+    }
+
     public function testDelete(): void
     {
         $this->expectException(UserException::class);
