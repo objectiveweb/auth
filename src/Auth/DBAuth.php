@@ -1037,18 +1037,21 @@ class DBAuth extends \Objectiveweb\Auth
         $table = (string) $this->params['table'];
         $tokenField = (string) $this->params['token'];
         $tokenExpiresField = $this->params['token_expires_field'];
-        $params = [];
+        $now = date('Y-m-d H:i:s');
 
-        $sql = sprintf('SELECT * FROM %s WHERE %s IS NOT NULL', $table, $tokenField);
-        if (is_string($tokenExpiresField) && $tokenExpiresField !== '') {
-            $sql .= sprintf(' AND %s >= :now', $tokenExpiresField);
-            $params['now'] = date('Y-m-d H:i:s');
-        }
+        // Use DB::select() so configured table prefixes and identifier quoting
+        // are applied consistently. Token hashes cannot be queried directly,
+        // because password_verify() must compare the supplied token in PHP.
+        $rows = $this->db->select($table, ['!' . $tokenField => null])->all();
+        foreach ($rows as $row) {
+            if (is_string($tokenExpiresField) && $tokenExpiresField !== '') {
+                $expiresAt = $row[$tokenExpiresField] ?? null;
+                if (!is_string($expiresAt) || $expiresAt < $now) {
+                    continue;
+                }
+            }
 
-        $query = $this->db->query($sql);
-        $query->exec($params);
-        foreach ($query->all() as $row) {
-            $candidateHash = (string) ($row[$this->params['token']] ?? '');
+            $candidateHash = (string) ($row[$tokenField] ?? '');
             if ($candidateHash === '') {
                 continue;
             }
