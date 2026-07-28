@@ -2,54 +2,53 @@
 
 namespace Objectiveweb;
 
-use Objectiveweb\Auth\UserException;
-use Objectiveweb\Auth\PasswordMismatchException;
-
-use PDO;
-
-class Auth
+abstract class Auth
 {
-    private $params;
 
-    /** @var \PDO */
-    private $pdo;
+    // Base access markers
+    const ANONYMOUS = ['anon'];
+    const AUTHENTICATED = ['auth'];
+    const ALL = ['anon', 'auth'];
 
-    const SELECT_ALL = "SELECT * FROM `%s` where `%s` = %s";
-	const SELECT_SEARCH = "SELECT SQL_CALC_FOUND_ROWS * FROM `%s` WHERE %s";
-    const REGISTER_QUERY = "INSERT INTO `%s` (%s) VALUES (%s)";
-    const RESET_PASSWORD = 'UPDATE `%s` SET `%s` = %s, `%s` = NULL WHERE %s = %s';
-    const UPDATE_QUERY = "UPDATE `%s` SET %s WHERE `%s` = %s";
-    const UPDATE_VALUE = "UPDATE `%s` SET `%s` = %s WHERE `%s` = %s";
-    const USER_BY_NAME = "SELECT `%s` FROM `%s` WHERE `%s` = %s";
-	const DELETE_QUERY = "DELETE FROM `%s` WHERE `%s` = %s LIMIT 1";
+    public array $params;
+
+    function __construct(array $params)
+    {
+        $defaults = [
+            'session_key' => 'ow_auth',
+            'id' => 'id',
+            'password' => 'password',
+            'roles' => 'roles',
+            'login_providers' => ['local', 'email'],
+            'token' => NULL, // Name of the field that should store user tokens
+            'token_expires_field' => 'token_expires_at',
+            'token_ttl' => 3600,
+            'register_scope' => Auth::ANONYMOUS, // who is allowed to use /register
+            'register_allow_grants' => false,
+            'recovery_providers' => ['local', 'email', 'phone'],
+            'register_callback' => null,
+            'token_callback' => null,
+            'invitation_callback' => null,
+            'reset_callback' => null,
+            'audit_callback' => null,
+            'deletion_guard_callback' => null,
+            'disabled_at' => null,
+            'managed_relations' => [],
+            'management_csrf' => true,
+            'management_csrf_session_key' => 'ow_auth_management_csrf',
+        ];
+
+        $this->params = array_merge($defaults, $params);
+    }
 
     public static function hash($password = null)
     {
-        if (!$password) {
+        if ($password === null) {
             // return a random token
-            return md5(microtime(true));
+            return bin2hex(random_bytes(16));
         }
 
-        return password_hash($password, PASSWORD_BCRYPT);
-    }
-
-    public function __construct(\PDO $pdo, $params = array())
-    {
-        $defaults = array(
-            'session_key' => 'ow_auth',
-            'table' => 'ow_auth',
-            'id' => 'id',
-            'username' => 'username',
-            'password' => 'password',
-            'token' => NULL,
-            'created' => NULL,
-            'last_login' => NULL
-        );
-
-        $this->pdo = $pdo;
-
-        $this->params = array_merge($defaults, $params);
-
+        return \password_hash($password, PASSWORD_BCRYPT);
     }
 
     /**
@@ -60,146 +59,203 @@ class Auth
         return !empty($_SESSION[$this->params['session_key']]);
     }
 
-	/**
-	 * Queries the Auth table
-	 */
-	public function query($params = array(), $operator = "OR") {
-		
-		$page = intval(@$params['page']);
-		$size = intval(@$params['size']);
-		$sort = @$params['sort'];
-		
-		unset($params['page']);
-		unset($params['size']);
-		unset($params['sort']);
-		
-		if(!$size) $size = 20;
-		
-		$cond = array();
-		$bindings = array();
-		
-		foreach($params as $key => $value) {
-			$cond[] = sprintf("`%s` %s :where_%s", 
-					str_replace('`', '``', $key), 
-					is_null($value) ? 'is' : (strpos($value, '%') !== FALSE ? 'LIKE' : '='),
-					$key);
-			$bindings[":where_$key"] = $value;
-		}
-		
-		$query = sprintf(self::SELECT_SEARCH,
-            $this->params['table'],
-			empty($cond) ? '1=1' : implode(" $operator ", $cond)
-		);
-		
-		$query .= sprintf(" LIMIT %d, %d", $page * $size, $size);
-		
-		$stmt = $this->pdo->prepare($query);
-		
-		$stmt->execute($bindings);
-
-		if(!$stmt) {
-			$error = $this->pdo->errorInfo();
-			
-			throw new \Exception($error[2]);
-		}
-		
-		$data = $stmt->fetchAll(PDO::FETCH_ASSOC);
-		
-		$stmt = $this->pdo->query("SELECT FOUND_ROWS() as count");
-		
-		$count = $stmt->fetch(PDO::FETCH_ASSOC);
-		
-		if(!$count) {
-			throw new \Exception("Error fetching count");
-		}
-		
- 		$count = intval($count['count']);
-		
-		return array(
-			'_embedded' => array(
-				$this->params['table'] => $data
-			),
-			'page' => array(
-				'size' => $size,
-				'number' => $page,
-				'totalElements' => $count,
-				'totalPages' => ceil($count/$size)
- 			)
-		);
-	}
-	
-    /**
-     * Retrieves a user from the database
-     * @param $username username
-     * @return array user data
-     * @throws UserException
-	 * @throws Exception
-     */
-    public function get($username) {
-
-
-        if(is_numeric($username)) {
-            $key = 'id';
-        }
-        else {
-            $key = 'username';
-        }
-
-        $query = sprintf(self::SELECT_ALL,
-            $this->params['table'],
-            $this->params[$key],
-            $this->pdo->quote($username));
-
-        $stmt = $this->pdo->query($query);
-
-		if(!$stmt) {
-			$error = $this->pdo->errorInfo();
-			
-			throw new \Exception($error[2]);
-		}
-		
-        if($user = $stmt->fetch(PDO::FETCH_ASSOC)) {
-            return $user;
-        }
-        else {
-            throw new UserException('User not found', 404);
-        }
+    public function is_active(array $user): bool
+    {
+        $field = $this->params['disabled_at'];
+        return !is_string($field) || $field === '' || empty($user[$field]);
     }
 
     /**
-     * @param $username
-     * @param $password
-     * @throws UserException
-     * @throws PasswordMismatchException
+     * Reload the session principal so role and lifecycle changes take effect on
+     * the very next protected request.
      */
-    public function &login($username, $password)
+    public function revalidate(): bool
     {
+        if (!$this->check()) {
+            return false;
+        }
 
-        $user = $this->get($username);
+        try {
+            $user = $this->reload();
+        } catch (\Throwable) {
+            $this->logout();
+            return false;
+        }
 
-        if(\password_verify($password, $user[$this->params['password']])) {
+        if (!$this->is_active($user)) {
+            $this->logout();
+            return false;
+        }
 
-            unset($user[$this->params['password']]);
+        return true;
+    }
 
-            $_SESSION[$this->params['session_key']] = $user;
+    public function management_csrf_token(): string
+    {
+        $key = (string) $this->params['management_csrf_session_key'];
+        if (empty($_SESSION[$key]) || !is_string($_SESSION[$key])) {
+            $_SESSION[$key] = bin2hex(random_bytes(32));
+        }
 
-            if($this->params['last_login']) {
-                $query = sprintf(self::UPDATE_VALUE,
-                    $this->params['table'],
-                    $this->params['last_login'],
-                    'NOW()',
-                    $this->params['id'],
-                    $user[$this->params['id']]);
+        return $_SESSION[$key];
+    }
 
-                $this->pdo->query($query);
+    public function audit(string $action, int|string|null $targetUserId, array $metadata = []): void
+    {
+        $callback = $this->params['audit_callback'];
+        if (!is_callable($callback)) {
+            return;
+        }
+
+        $actorId = null;
+        if ($this->check()) {
+            $actorId = $this->user()[$this->params['id']] ?? null;
+        }
+        call_user_func($callback, $actorId, $targetUserId, $action, $metadata);
+    }
+
+    public function invite(int|string $userId, bool $reset = false): void
+    {
+        $user = $this->get($userId);
+        $token = $this->update_token($userId);
+        $credentials = $this->get_credentials($userId);
+        $callback = $this->params[$reset ? 'reset_callback' : 'invitation_callback']
+            ?? ($reset ? $this->params['token_callback'] : $this->params['register_callback']);
+
+        if (is_callable($callback)) {
+            call_user_func($callback, $user, $credentials, $token);
+        }
+    }
+
+    public function user_can(string $ability, mixed ...$args): bool|array
+    {
+        if (count($args) === 0) {
+            if (!$this->check()) {
+                return false;
             }
 
-            return $_SESSION[$this->params['session_key']];
-        }
-        else {
-            throw new PasswordMismatchException();
+            $user = $this->user();
+            $roleField = $this->params['roles'];
+            $roles = is_array($user[$roleField] ?? null) ? $user[$roleField] : [];
+
+            return in_array($ability, $roles, true);
         }
 
+        $mode = null;
+        if (count($args) === 1 && is_int($args[0])) {
+            $mode = 'user_relation';
+        } elseif (count($args) === 1 && is_string($args[0])) {
+            $mode = 'resource_list';
+        } elseif (count($args) === 2 && is_string($args[0]) && is_int($args[1])) {
+            $mode = 'resource_relation';
+        }
+
+        if ($mode === null) {
+            throw new \InvalidArgumentException('Invalid user_can() signature');
+        }
+
+        if (!$this->check()) {
+            if ($mode === 'resource_list') {
+                return [];
+            }
+
+            return false;
+        }
+
+        $subjectId = $this->currentUserId();
+        if ($subjectId === null) {
+            if ($mode === 'resource_list') {
+                return [];
+            }
+
+            return false;
+        }
+
+        if ($mode === 'user_relation') {
+            return $this->userCanRelation($subjectId, 'user', $args[0], $ability);
+        }
+
+        if ($mode === 'resource_list') {
+            return $this->userCanRelationList($subjectId, $args[0], $ability);
+        }
+
+        return $this->userCanRelation($subjectId, $args[0], $args[1], $ability);
+    }
+
+    private function currentUserId(): ?int
+    {
+        $idField = $this->params['id'];
+        $user = $this->user();
+        $id = $user[$idField] ?? null;
+        if (is_int($id)) {
+            return $id;
+        }
+
+        if (is_string($id) && ctype_digit($id)) {
+            return (int) $id;
+        }
+
+        return null;
+    }
+
+    protected function userCanRelation(int $subjectId, string $resourceType, int $resourceId, string $ability): bool
+    {
+        return false;
+    }
+
+    protected function userCanRelationList(int $subjectId, string $resourceType, string $ability): array
+    {
+        return [];
+    }
+
+    /**
+     * @param $uid
+     * @param $password
+     * @throws Auth\UserException
+     * @throws Auth\AuthException
+     */
+    public function &login($uid, $password)
+    {
+        $credential = false;
+        $provider = null;
+        foreach ($this->params['login_providers'] as $candidateProvider) {
+            $candidateCredential = $this->get_credential($candidateProvider, $uid);
+            if (!$candidateCredential) {
+                continue;
+            }
+
+            $credential = $candidateCredential;
+            $provider = $candidateProvider;
+            break;
+        }
+
+        if (!$credential) {
+            throw new Auth\UserException('User does not exist', 404);
+        }
+
+        $user = $this->get($credential['user_id']);
+
+        if (!$this->is_active($user)) {
+            throw new Auth\AuthException('Account suspended', 403);
+        }
+
+        if (\password_verify($password, $user[$this->params['password']])) {
+
+            unset($user[$this->params['password']]);
+            unset($user[$this->params['token']]);
+
+            if (session_status() === PHP_SESSION_ACTIVE) {
+                session_regenerate_id(true);
+            }
+            $this->user($user);
+
+            // TODO add login ip
+            $this->update_credential($user[$this->params['id']], (string) $provider, $uid, null);
+
+            return $user;
+        } else {
+            throw new Auth\AuthException('Password invalid', 400);
+        }
     }
 
     /**
@@ -210,84 +266,32 @@ class Auth
         unset($_SESSION[$this->params['session_key']]);
     }
 
-
-
     /**
-     * @param string $username
-     * @param string $password
-     * @param array $data associative array of additional columns to store
+     * Reloads current user from the backend
      */
-    public function register($username, $password = null, $data = array())
+    public function reload()
     {
-		if(is_array($username)) {
-			$data = $username;
-			
-			$username = @$data[$this->params['username']];
-			unset($data[$this->params['username']]);
-			
-			$password = @$data['password'];
-			unset($data['password']);
-		}
-		
-        $fields = array();
+        $user = $this->user();
+        $user = $this->get($user[$this->params['id']], $this->params['id']);
 
-        // escape fields
-        foreach($data as $k => $v) {
-            $fields[str_replace(array('\\',"\0" ,'`'), '', $k)] = $this->pdo->quote($v);
-        }
-
-        if(empty($username) || empty($password)) {
-			throw new \Exception("Por favor informe usuário e senha");
-		}
-
-        $fields[$this->params['username']] = $this->pdo->quote($username);
-        $fields[$this->params['password']] = $this->pdo->quote(self::hash($password));
-        if($this->params['token']) {
-            $fields[$this->params['token']] = $this->pdo->quote(self::hash());
-        }
-
-        if($this->params['created']) {
-            $fields[$this->params['created']] = 'NOW()';
-        }
-
-        $query = (sprintf(self::REGISTER_QUERY,
-            $this->params['table'],
-            implode(", ", array_keys($fields)),
-            implode(", ", array_values($fields))
-        ));
-
-        if ($this->pdo->query($query)) {
-
-            $fields[$this->params['id']] = $this->pdo->lastInsertId();
-            unset($fields[$this->params['created']]);
-
-            return $fields;
-        } else {
-            $errorInfo = $this->pdo->errorInfo();
-
-            if($errorInfo[1] == 1062) {
-                throw new \Exception(sprintf("User %s already exists", $username), 409);
-            }
-            else {
-                throw new \Exception($errorInfo[2]);
-            }
-        }
+        return $this->user($user);
     }
 
     /**
      * Returns the current logged in user or sets the current login data
      * @param $user array
-     * @return array user data
+     * @return array user data, sets a new user on session if
      * @throws UserException if noone is logged in
      */
     public function &user($user = null)
     {
-        if($user) {
+        if ($user) {
+            unset($user[$this->params['token']]);
+            unset($user[$this->params['password']]);
             $_SESSION[$this->params['session_key']] = $user;
-        }
-        else {
-            if(!$this->check()) {
-                throw new UserException('Not logged in', 403);
+        } else {
+            if (!$this->check()) {
+                throw new Auth\UserException('Not logged in', 403);
             }
         }
 
@@ -295,176 +299,149 @@ class Auth
         return $_SESSION[$this->params['session_key']];
     }
 
+    public function validate($user)
+    {
+        $uid = trim((string) ($user['uid'] ?? ''));
+
+        if (empty($uid)) {
+            throw new \Exception("Missing uid", 400);
+        }
+
+        $user['uid'] = $uid;
+
+        if (isset($user[$this->params['password']])) {
+            if (empty($user[$this->params['password']])) {
+                throw new \Exception("Missing password", 400);
+            }
+        }
+
+        return $user;
+    }
+
+
+    //
+
+    abstract public function query($params = array(), $operator = "OR");
+
+    /**
+     * Retrieves a user from the database
+     * @param $user_id String user_id
+     * @param $key String which key to lookup (id, token)
+     * @return array user data
+     * @throws UserException
+     * @throws \Exception
+     */
+    abstract public function get($user_id, $key = 'id');
+
+    /**
+     * @param string $uid
+     * @param string $password
+     * @param array $data associative array of additional columns to store
+     */
+    abstract public function register($uid, $password = null, $data = array());
+
     /**
      *
      * Update a user's password
      *
-     * @param $username
+     * @param $user_id
      * @param $password
+     * @param $key String
      * @return bool TRUE on success
      * @throws UserException if no rows were updated
      */
-    public function passwd($username, $password)
-    {
-
-        if(is_numeric($username)) {
-            $key = 'id';
-        }
-        else {
-            $key = 'username';
-        }
-
-        $query = sprintf(self::UPDATE_VALUE,
-            $this->params['table'],
-            $this->params['password'],
-            $this->pdo->quote(self::hash($password)),
-            $this->params[$key],
-            $this->pdo->quote($username));
-
-
-        $stmt = $this->pdo->query($query);
-
-        if($stmt === FALSE || $stmt->rowCount() !== 1) {
-            throw new UserException('User not found');
-        }
-
-        return TRUE;
-
-    }
+    abstract public function passwd($user_id, $password, $key = 'id');
 
     /**
      *
      * Reset a user's password
      *
-     * @param $token
-     * @param $password new password
-     * @return bool TRUE on success
+     * @param $token String
+     * @param $password String new password
+     * @return $user array user data on success
      * @throws UserException if no rows were updated
      */
-    public function passwd_reset($token, $password)
-    {
-
-        $query = sprintf(self::RESET_PASSWORD,
-            $this->params['table'],
-            $this->params['password'],
-            $this->pdo->quote(self::hash($password)),
-            $this->params['token'],
-            $this->params['token'],
-            $this->pdo->quote($token));
-
-
-        $stmt = $this->pdo->query($query);
-
-        if($stmt === FALSE || $stmt->rowCount() !== 1) {
-            throw new UserException('Hash not found');
-        }
-
-        return TRUE;
-
-    }
-
+    abstract public function passwd_reset($token, $password);
 
     /**
      * Update arbitrary user data
-     * @param $username
+     * @param $user_id
      * @param array $data associative array of data
+     * @param key String
      * @throws UserException if no rows were updated
      */
-    public function update($username, array $data) {
-        $cond = array();
-        unset($data[$this->params['id']]);
-		unset($data[$this->params['password']]);
+    abstract public function update($user_id, array $data, $key = 'id');
 
-        if($this->params['token']) {
-            unset($data[$this->params['token']]);
-        }
+    abstract public function delete($user_id);
 
-        if($this->params['created']) {
-            unset($data[$this->params['created']]);
-        }
-
-        if($this->params['last_login']) {
-            unset($data[$this->params['last_login']]);
-        }
-
-
-        foreach($data as $k => $v) {
-            $cond[] = sprintf("`%s` = %s", str_replace(array('\\',"\0" ,'`'), '', $k), $this->pdo->quote($v));
-        }
-
-
-        if(is_numeric($username)) {
-            $key = 'id';
-        }
-        else {
-            $key = 'username';
-        }
-
-        $query = sprintf(self::UPDATE_QUERY,
-            $this->params['table'],
-            implode(', ', $cond),
-            $this->params[$key],
-            $this->pdo->quote($username));
-
-        $stmt = $this->pdo->query($query);
-
-        if($stmt === FALSE) {
-            throw new UserException(json_encode($this->pdo->errorInfo()));
-        }
-
-    }
-
-	public function delete($username) {
-
-        if(is_numeric($username)) {
-            $key = 'id';
-        }
-        else {
-            $key = 'username';
-        }
-
-
-        if($this->check()) {
-            $user = $this->user();
-
-            if($user[$this->params[$key]] == $username) {
-                throw new \Exception("Cannot delete yourself!");
-            }
-        }
-
-        $query = sprintf(self::DELETE_QUERY,
-            $this->params['table'],
-            $this->params[$key],
-            $this->pdo->quote($username));
-
-        $stmt = $this->pdo->query($query);
-
-        if($stmt === FALSE || $stmt->rowCount() !== 1) {
-            throw new \Exception(json_encode($this->pdo->errorInfo()));
-        }
-	}
-	
     /**
      * Generates a new token for the user and update the database
-     * @param $username
+     * @param $user_id
      * @return string new token
      */
-    public function update_token($username) {
-        $token = self::hash();
+    abstract public function update_token($user_id);
 
-        $query = sprintf(self::UPDATE_VALUE,
-            $this->params['table'],
-            $this->params['token'],
-            $this->pdo->quote($token),
-            $this->params['username'],
-            $this->pdo->quote($username));
+    /**
+     * Retrieves an account from credentials_table
+     * @param $provider String provider
+     * @param $userid String user_id
+     * @return mixed account data or null if account not found
+     * @throws \Exception
+     */
+    abstract public function get_credential($provider, $accountid);
 
-        $stmt = $this->pdo->query($query);
+    /**
+     * List all credentials for a user.
+     *
+     * Returned rows are normalized to:
+     * - uid
+     * - provider
+     * - profile
+     * - last_login
+     * - created
+     */
+    abstract public function get_credentials($user_id, $key = 'id'): array;
 
-        if($stmt === FALSE || $stmt->rowCount() !== 1) {
-            throw new UserException('Token not found');
-        }
+    /**
+     * List all users that have the given role name.
+     *
+     * @param string $roleName
+     * @return array<int,array<string,mixed>>
+     */
+    abstract public function get_users_by_role($roleName): array;
 
-        return $token;
-    }
+    /**
+     * List all available role names.
+     *
+     * @return array<int,string>
+     */
+    abstract public function get_roles(): array;
+
+    /**
+     * Inserts a new account on $userid, or update the existing one
+     *
+     * @param $userid
+     * @param $provider
+     * @param $uid
+     * @param null $profile
+     * @return bool
+     * @throws \Exception
+     */
+    abstract public function update_credential($userid, $provider, $uid, $profile = null);
+
+    abstract public function create_credential($userid, string $provider, string $uid, mixed $profile = null): array;
+
+    abstract public function rename_credential(
+        $userid,
+        string $provider,
+        string $uid,
+        string $newProvider,
+        string $newUid
+    ): array;
+
+    abstract public function delete_credential($userid, string $provider, string $uid): bool;
+
+    abstract public function get_managed_relations($userId): array;
+
+    abstract public function sync_managed_relations($userId, array $relations): array;
 }

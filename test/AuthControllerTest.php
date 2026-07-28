@@ -1,105 +1,132 @@
 <?php
-/**
- * Created by IntelliJ IDEA.
- * User: guigouz
- * Date: 16/02/15
- * Time: 15:43
- */
 
-require dirname(__DIR__) . '/vendor/autoload.php';
+require_once dirname(__DIR__) . '/vendor/autoload.php';
 
-use Objectiveweb\Auth;
-use Objectiveweb\Auth\AuthController;
+use Objectiveweb\Auth\AuthException;
+use Objectiveweb\Auth\BasicAuth;
+use Objectiveweb\Auth\Controller\AuthController;
+use Objectiveweb\Auth\UserException;
+use PHPUnit\Framework\TestCase;
 
-class AuthControllerTest extends PHPUnit_Framework_TestCase
+class AuthControllerTest extends TestCase
 {
+    private BasicAuth $auth;
+    private AuthController $controller;
 
-    /** @var  AuthController */
-    protected static $controller;
-
-    private static $shared_session = array();
-
-    public static function setUpBeforeClass()
+    protected function setUp(): void
     {
+        $_SESSION = [];
+        $this->auth = new BasicAuth([], ['token' => 'token']);
+        $this->controller = new AuthController($this->auth);
+    }
 
-        $pdo = new PDO('mysql:dbname=objectiveweb;host=localhost', 'root');
-        $pdo->query('drop table if exists ow_auth_test');
-        $pdo->query('create table ow_auth_test
-            (`id` INT UNSIGNED PRIMARY KEY NOT NULL AUTO_INCREMENT,
-                `username` VARCHAR(255),
-                `displayName` VARCHAR(255),
-                `email` VARCHAR(255),
-                `created` DATETIME,
-                `last_login` DATETIME,
-                `password` CHAR(60),
-                `token` CHAR(32));');
+    public function testPostMissingUid(): void
+    {
+        $this->expectException(UserException::class);
+        $this->expectExceptionCode(400);
+        $this->controller->post(['password' => 'secret']);
+    }
 
-        $auth = new Auth($pdo, array(
-            'table' => 'ow_auth_test',
-            'created' => 'created',
+    public function testPostMissingPassword(): void
+    {
+        $this->expectException(UserException::class);
+        $this->expectExceptionCode(400);
+        $this->controller->post(['uid' => 'a@example.com']);
+    }
+
+    public function testPostRegisterInvalidEmail(): void
+    {
+        $this->expectException(AuthException::class);
+        $this->controller->postRegister(['uid' => 'invalid', 'password' => 'secret']);
+    }
+
+    public function testPostTokenPasswordMismatch(): void
+    {
+        $this->expectException(UserException::class);
+        $this->expectExceptionCode(400);
+        $this->controller->postToken([
+            'token' => 'abc',
+            'password' => 'a',
+            'confirm' => 'b',
+        ]);
+    }
+
+    public function testPostPasswordForgotFlowMissingUid(): void
+    {
+        $this->expectException(UserException::class);
+        $this->expectExceptionCode(400);
+        $this->controller->postPassword(['password' => 'a', 'confirm' => 'a']);
+    }
+
+    public function testPostPasswordForgotFlowUsesEmailCredential(): void
+    {
+        $auth = new BasicAuth([], ['token' => 'token']);
+        $controller = new AuthController($auth);
+
+        $auth->register('alice@example.com', 'secret', ['provider' => 'email']);
+        $result = $controller->postPassword(['uid' => 'alice@example.com']);
+
+        $this->assertSame([], $result);
+    }
+
+    public function testPostPasswordForgotFlowUsesPhoneCredential(): void
+    {
+        $auth = new BasicAuth([], ['token' => 'token']);
+        $controller = new AuthController($auth);
+
+        $auth->register('+5511999999999', 'secret', ['provider' => 'phone']);
+        $result = $controller->postPassword(['uid' => '+5511999999999']);
+
+        $this->assertSame([], $result);
+    }
+
+    public function testPostPasswordForgotFlowUsesLocalCredentialByDefault(): void
+    {
+        $auth = new BasicAuth([], ['token' => 'token']);
+        $controller = new AuthController($auth);
+
+        $auth->register('local@example.com', 'secret', ['provider' => 'local']);
+        $result = $controller->postPassword(['uid' => 'local@example.com']);
+
+        $this->assertSame([], $result);
+    }
+
+    public function testPostRegisterStripsRolesByDefault(): void
+    {
+        $user = $this->controller->postRegister([
+            'uid' => 'safe@example.com',
+            'password' => 'secret',
+            'roles' => ['admin'],
+        ]);
+
+        $this->assertSame([], $user['roles'] ?? []);
+    }
+
+    public function testPostRegisterRejectsWhenRegisterScopeIsAuthenticated(): void
+    {
+        $controller = new AuthController(new BasicAuth([], [
             'token' => 'token',
-            'last_login' => 'last_login'
-        ));
-		
-		self::$controller = new AuthController($auth);
+            'register_scope' => \Objectiveweb\Auth::AUTHENTICATED,
+        ]));
+
+        $this->expectException(AuthException::class);
+        $this->expectExceptionCode(401);
+        $controller->postRegister([
+            'uid' => 'blocked@example.com',
+            'password' => 'secret',
+        ]);
     }
 
-    public function testPost()
+    public function testIndexReturnsUserWithCredentialsWhenLoggedIn(): void
     {
+        $this->auth->register('alice@example.com', 'secret', ['provider' => 'local']);
+        $this->auth->update_credential(1, 'phone', '+5511999999999', ['country' => 'BR']);
+        $this->auth->login('alice@example.com', 'secret');
 
-        $user = self::$controller->post(array(
-			'username' => 'user', 
-			'password' => 'test',
-            'email' => 'vagrant@localhost',
-            'displayName' => 'Test User'));
+        $result = $this->controller->index();
 
-        $this->assertEquals(1, $user['id']);
-
+        $this->assertSame(1, $result['id']);
+        $this->assertArrayHasKey('credentials', $result);
+        $this->assertCount(2, $result['credentials']);
     }
-	
-	/**
-	 * @depends testPost
-	 */
-	public function testGet() {
-		$user = self::$controller->get('user');
-
-        $this->assertEquals(1, $user['id']);
-	}
-
-	/**
-	 * @depends testGet
-	 */
-	public function testQuery() {
-		$all = self::$controller->get();
-		
-		$this->assertEquals(1, count($all['_embedded']['ow_auth_test']));
-		
-		$this->assertEquals('Test User', $all['_embedded']['ow_auth_test'][0]['displayName']);
-		
-		$this->assertEquals(1, $all['page']['totalElements']);
-		$this->assertEquals(1, $all['page']['totalPages']);
-		$this->assertEquals(0, $all['page']['number']);
-	}
-	
-	/**
-	 * @depends testQuery
-	 */
-    public function testPut() {
-
-        self::$controller->put('user', array( 'displayName' => 'Updated name' ));
-
-        $user = self::$controller->get('user');
-
-        $this->assertEquals('Updated name', $user['displayName']);
-    }
-
-	/**
-	 * @depends testPut
-     * @expectedException Objectiveweb\Auth\UserException
-     */
-	public function testDelete() {
-		self::$controller->delete('user');
-		
-		$user = self::$controller->get('user');
-	}
 }
