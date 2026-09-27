@@ -136,9 +136,8 @@ class OAuthController extends AuthController
                 $resourceOwner->toArray());
         }
 
-        // Set session
-        $this->auth->user($user);
-
-        return $user;
+        // Apply the same lifecycle and session-fixation protections as
+        // password authentication before storing the principal.
+        return $this->auth->establish_session($user);
     }
 }
