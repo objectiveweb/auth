@@ -82,11 +82,16 @@ $auth = new DBAuth($db, [
 
 #### Required tables
 
-`DBAuth` expects:
-- users table (`table`)
-- credentials table (`credentials_table`)
+`DBAuth` expects the configured users and credentials tables. With the default
+role configuration it also expects the roles and user-role mapping tables. Set
+both `roles_table` and `user_roles_table` to `null` to disable database-backed
+roles.
 
-Example schema (SQLite-compatible):
+The bundled Phinx migrations use the default logical table names (`user`,
+`user_credentials`, `role`, and `user_roles`). Applications may apply their
+normal Phinx table prefix instead of hardcoding prefixed names in Auth.
+
+Example schema for the custom `auth_*` configuration above (SQLite-compatible):
 
 ```sql
 CREATE TABLE auth_user (
@@ -96,7 +101,9 @@ CREATE TABLE auth_user (
     image TEXT,
     created TEXT,
     password TEXT,
-    token TEXT
+    token TEXT,
+    token_expires_at TEXT,
+    disabled_at TEXT
 );
 
 CREATE TABLE auth_credentials (
@@ -105,6 +112,7 @@ CREATE TABLE auth_credentials (
     user_id INTEGER NOT NULL,
     profile TEXT NULL,
     last_login TEXT NULL,
+    created TEXT NULL,
     PRIMARY KEY(uid, provider)
 );
 
@@ -130,8 +138,8 @@ CREATE TABLE auth_user_role (
 - `token`: optional password-reset token field
 - `table`: users table name (default `user`)
 - `credentials_table`: credentials table name (default `user_credentials`)
-- `roles_table`: optional roles table name (default `null`)
-- `user_roles_table`: optional user-role mapping table name (default `null`)
+- `roles_table`: roles table name (default `role`; set together with `user_roles_table` to `null` to disable roles)
+- `user_roles_table`: user-role mapping table name (default `user_roles`; set together with `roles_table` to `null` to disable roles)
 - `user_roles_user_id`: user FK column in mapping table (default `user_id`)
 - `user_roles_role_id`: role FK column in mapping table (default `role_id`)
 - `role_id`: role PK column in `roles_table` (default `id`)
@@ -146,7 +154,10 @@ CREATE TABLE auth_user_role (
 - `relations.<name>.eager`: eager load related rows into user payload (`true` => `[]`, `array` => select params)
 - `created`: optional created-at field
 - `last_login`: optional user last-login field
-- `credentials_last_login`: optional credentials last-login field
+- `credentials_last_login`: optional credentials last-login field (default `last_login`)
+- `credentials_created`: optional credentials created-at field (default `created`)
+- `token_expires_field`: password-reset token expiry field (default `token_expires_at`)
+- `token_ttl`: reset-token lifetime in seconds (default `3600`)
 - `uuid`: UUID field created on register and protected from updates (default `uuid`)
 
 ### `BasicAuth`
