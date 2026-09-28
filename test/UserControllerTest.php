@@ -26,6 +26,7 @@ class UserControllerTest extends TestCase
                 created TEXT,
                 password TEXT,
                 token TEXT,
+                token_expires_at TEXT,
                 disabled_at TEXT
             )'
         )->exec();
