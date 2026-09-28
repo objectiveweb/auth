@@ -645,7 +645,7 @@ class DBAuth extends \Objectiveweb\Auth
 
         $safeFields = ['name', 'image', $userIdField];
 
-        foreach (['uuid', 'created', 'last_login', 'token_expires_field'] as $paramKey) {
+        foreach (['uuid', 'created', 'last_login', 'disabled_at', 'token_expires_field'] as $paramKey) {
             $field = $this->params[$paramKey] ?? null;
             if (is_string($field) && $field !== '' && !in_array($field, $safeFields, true)) {
                 $safeFields[] = $field;
