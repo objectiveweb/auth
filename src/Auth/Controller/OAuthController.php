@@ -47,6 +47,7 @@ class OAuthController extends AuthController
         $provider = new $classname($config);
 
         if (!empty($query['error'])) {
+            unset($_SESSION['oauth2state']);
             throw new \Exception("Got error {$query['error']}", 500);
         } elseif (empty($query['code'])) {
             // generate authUrl first to update state
@@ -54,7 +55,10 @@ class OAuthController extends AuthController
             $_SESSION['oauth2state'] = $provider->getState();
             $this->redirect($authUrl);
             return;
-        } elseif (empty($query['state']) || $query['state'] !== $_SESSION['oauth2state']) {
+        } elseif (
+            empty($query['state'])
+            || $query['state'] !== ($_SESSION['oauth2state'] ?? null)
+        ) {
             unset($_SESSION['oauth2state']);
             throw new \Exception('Invalid state', 406);
         } else {
