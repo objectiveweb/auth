@@ -25,7 +25,8 @@ class UserControllerTest extends TestCase
                 image TEXT,
                 created TEXT,
                 password TEXT,
-                token TEXT
+                token TEXT,
+                disabled_at TEXT
             )'
         )->exec();
 
@@ -37,6 +38,21 @@ class UserControllerTest extends TestCase
                 profile TEXT NULL,
                 last_login TEXT NULL,
                 PRIMARY KEY(uid, provider)
+            )'
+        )->exec();
+
+        self::$db->query(
+            'CREATE TABLE auth_role (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE
+            )'
+        )->exec();
+
+        self::$db->query(
+            'CREATE TABLE auth_user_role (
+                user_id INTEGER NOT NULL,
+                role_id INTEGER NOT NULL,
+                PRIMARY KEY(user_id, role_id)
             )'
         )->exec();
 
@@ -57,6 +73,8 @@ class UserControllerTest extends TestCase
     {
         $_SESSION = [];
         self::$db->query('DELETE FROM auth_credentials')->exec();
+        self::$db->query('DELETE FROM auth_user_role')->exec();
+        self::$db->query('DELETE FROM auth_role')->exec();
         self::$db->query('DELETE FROM auth_user')->exec();
     }
 
@@ -126,6 +144,48 @@ class UserControllerTest extends TestCase
         $updated = self::$controller->get((int) $user['id']);
 
         $this->assertSame('Updated name', $updated['name']);
+    }
+
+    public function testCannotSuspendOnlyActiveAdminWhenAnotherAdminIsSuspended(): void
+    {
+        self::$db->insert('auth_role', ['name' => 'admin']);
+
+        $auth = new DBAuth(self::$db, [
+            'table' => 'auth_user',
+            'credentials_table' => 'auth_credentials',
+            'created' => 'created',
+            'token' => 'token',
+            'credentials_last_login' => 'last_login',
+            'credentials_created' => null,
+            'disabled_at' => 'disabled_at',
+            'roles_table' => 'auth_role',
+            'user_roles_table' => 'auth_user_role',
+        ]);
+        $controller = new UserController($auth);
+
+        $actor = $auth->register('actor@example.com', 'secret');
+        $activeAdmin = $auth->register('active-admin@example.com', 'secret', [
+            'roles' => ['admin'],
+        ]);
+        $suspendedAdmin = $auth->register('suspended-admin@example.com', 'secret', [
+            'roles' => ['admin'],
+            'disabled_at' => '2026-09-27 12:00:00',
+        ]);
+
+        $auth->login('actor@example.com', 'secret');
+
+        $admins = $auth->get_users_by_role('admin');
+        $this->assertCount(2, $admins);
+        $suspended = array_values(array_filter(
+            $admins,
+            fn (array $user): bool => (int) $user['id'] === (int) $suspendedAdmin['id']
+        ));
+        $this->assertCount(1, $suspended);
+        $this->assertSame('2026-09-27 12:00:00', $suspended[0]['disabled_at']);
+
+        $this->expectException(\Objectiveweb\Auth\UserException::class);
+        $this->expectExceptionCode(409);
+        $controller->post((int) $activeAdmin['id'], 'suspend');
     }
 
     public function testDelete(): void
