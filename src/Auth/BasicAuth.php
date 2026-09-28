@@ -247,6 +247,17 @@ class BasicAuth extends \Objectiveweb\Auth
             }
         }
 
+        $guard = $this->params['deletion_guard_callback'];
+        if (is_callable($guard)) {
+            $result = call_user_func($guard, $resolved);
+            if ($result === false || is_string($result)) {
+                throw new UserException(
+                    is_string($result) ? $result : 'User has application history',
+                    409
+                );
+            }
+        }
+
         $this->audit('user.deleted', $resolved);
         unset($this->users[$resolved]);
         foreach ($this->credentials as $provider => $records) {
@@ -422,11 +433,30 @@ class BasicAuth extends \Objectiveweb\Auth
         if (!$credential || ($credential['user_id'] ?? null) != $userid) {
             throw new UserException('Credential not found', 404);
         }
-        if (($provider !== $newProvider || $uid !== $newUid) && $this->get_credential($newProvider, $newUid)) {
+
+        $newProvider = trim($newProvider);
+        $newUid = trim($newUid);
+        if ($newProvider === '' || $newUid === '') {
+            throw new UserException('Provider and uid are required', 400);
+        }
+
+        $duplicate = $this->get_credential($newProvider, $newUid);
+        if (
+            ($provider !== $newProvider || $uid !== $newUid)
+            && $duplicate
+        ) {
             throw new UserException('Credential already registered', 409);
         }
+
         unset($this->credentials[$provider][$uid]);
-        $this->update_credential($userid, trim($newProvider), trim($newUid), $credential['profile'] ?? null);
+        if (isset($this->credentials[$provider]) && $this->credentials[$provider] === []) {
+            unset($this->credentials[$provider]);
+        }
+
+        $credential['provider'] = $newProvider;
+        $credential['uid'] = $newUid;
+        $this->credentials[$newProvider][$newUid] = $credential;
+
         return $this->get_credential($newProvider, $newUid);
     }
 
@@ -458,10 +488,17 @@ class BasicAuth extends \Objectiveweb\Auth
     {
         $this->get($userId);
         foreach ($relations as $name => $values) {
-            if (!isset($this->params['managed_relations'][$name]) || !is_array($values)) {
+            $relation = $this->params['managed_relations'][$name] ?? null;
+            if (!is_array($relation) || !is_array($values)) {
                 throw new UserException("Invalid managed relation `$name`", 400);
             }
-            $this->users[$userId]['_managed_relations'][$name] = array_values(array_unique($values));
+
+            $values = array_values(array_unique($values));
+            if (is_callable($relation['validate_callback'] ?? null)) {
+                call_user_func($relation['validate_callback'], $values);
+            }
+
+            $this->users[$userId]['_managed_relations'][$name] = $values;
         }
         return $this->get_managed_relations($userId);
     }
