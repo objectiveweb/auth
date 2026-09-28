@@ -32,12 +32,15 @@ class AuthMigration extends AbstractMigration
 
         $user = $this->table('user', ['signed' => false]);
         $user
+            ->addColumn('uuid', 'string', ['limit' => 36])
             ->addColumn('password', 'string', ['limit' => 60, 'null' => true])
             ->addColumn('name', 'string', ['limit' => 255, 'null' => true])
             ->addColumn('image', 'string', ['limit' => 255, 'null' => true])
             ->addColumn('token', 'string', ['limit' => 255, 'null' => true])
             ->addColumn('token_expires_at', 'datetime', ['null' => true])
-            ->addColumn('created', 'datetime', [ 'default' => Literal::from('now()')])
+            ->addColumn('disabled_at', 'datetime', ['null' => true])
+            ->addColumn('created', 'datetime', ['default' => Literal::from('now()')])
+            ->addIndex(['uuid'], ['unique' => true])
             ->create();
 
         $user_credentials = $this->table('user_credentials', [
