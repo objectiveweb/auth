@@ -52,7 +52,8 @@ class OAuthController extends AuthController
             // generate authUrl first to update state
             $authUrl = $provider->getAuthorizationUrl();
             $_SESSION['oauth2state'] = $provider->getState();
-            return $this->redirect($authUrl);
+            $this->redirect($authUrl);
+            return;
         } elseif (empty($query['state']) || $query['state'] !== $_SESSION['oauth2state']) {
             unset($_SESSION['oauth2state']);
             throw new \Exception('Invalid state', 406);
@@ -68,7 +69,8 @@ class OAuthController extends AuthController
 
             $this->login($id, $resourceOwner);
 
-            return $this->redirect('/');
+            $this->redirect('/');
+            return;
         }
     }
 
