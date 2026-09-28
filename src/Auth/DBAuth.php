@@ -992,14 +992,18 @@ class DBAuth extends \Objectiveweb\Auth
             }
 
             $eagerTable = $relation['table'] ?? null;
+            $subjectKey = $relation['subject_key'] ?? null;
             $eagerKey = $relation['target_key'] ?? null;
-            if (!is_string($eagerTable) || !is_string($eagerKey)) {
+            if (!is_string($eagerTable) || !is_string($subjectKey) || !is_string($eagerKey)) {
                 throw new \InvalidArgumentException("Invalid relation table/key config for relation `$relationName`");
             }
 
             $row[(string) $relationName] = $this->db->select(
                 $eagerTable,
-                [$eagerKey => $targetIds],
+                [
+                    $subjectKey => $subjectId,
+                    $eagerKey => $targetIds,
+                ],
                 $eagerParams
             )->all();
         }
