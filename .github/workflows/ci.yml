@@ -78,3 +78,6 @@ jobs:
 
       - name: Verify migrated schema
         run: php test/verify_migrations.php
+
+      - name: Verify portable role lookup
+        run: php test/verify_postgresql_role_lookup.php
