@@ -666,6 +666,50 @@ class DBAuthSqliteTest extends TestCase
         $this->assertSame([4, 8], $ids);
     }
 
+    public function testEagerRelationHydrationDoesNotIncludeOtherUsersRowsForSharedTarget(): void
+    {
+        $eagerAuth = new DBAuth(self::$db, [
+            'table' => 'auth_user',
+            'credentials_table' => 'auth_credentials',
+            'created' => 'created',
+            'token' => 'token',
+            'credentials_last_login' => 'last_login',
+            'roles' => 'roles',
+            'roles_table' => 'auth_role',
+            'user_roles_table' => 'auth_user_role',
+            'relations' => [
+                'item' => [
+                    'table' => 'item_users',
+                    'subject_key' => 'user_id',
+                    'target_key' => 'item_id',
+                    'ability_key' => 'ability',
+                    'eager' => true,
+                ],
+            ],
+        ]);
+
+        $alice = $eagerAuth->register('eager-alice@example.com', 'secret');
+        $bob = $eagerAuth->register('eager-bob@example.com', 'secret');
+
+        self::$db->insert('item_users', [
+            'user_id' => $alice['id'],
+            'item_id' => 42,
+            'ability' => 'view',
+        ]);
+        self::$db->insert('item_users', [
+            'user_id' => $bob['id'],
+            'item_id' => 42,
+            'ability' => 'manage',
+        ]);
+
+        $loaded = $eagerAuth->get($alice['id']);
+
+        $this->assertCount(1, $loaded['item']);
+        $this->assertSame((int) $alice['id'], (int) $loaded['item'][0]['user_id']);
+        $this->assertSame(42, (int) $loaded['item'][0]['item_id']);
+        $this->assertSame('view', $loaded['item'][0]['ability']);
+    }
+
     public function testGetHydratesRelationWithEagerArrayAsSelectParams(): void
     {
         $eagerAuth = new DBAuth(self::$db, [
