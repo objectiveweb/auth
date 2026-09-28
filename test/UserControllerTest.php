@@ -133,6 +133,63 @@ class UserControllerTest extends TestCase
         self::$controller->get(['unknown_field' => 'x']);
     }
 
+    public function testPostRejectsNonArrayRoles(): void
+    {
+        $this->expectException(\Objectiveweb\Auth\UserException::class);
+        $this->expectExceptionCode(400);
+
+        self::$controller->post([
+            'uid' => 'roles-string@example.com',
+            'password' => 'test',
+            'roles' => 'admin',
+        ]);
+    }
+
+    public function testPostAllowsCredentialMetadata(): void
+    {
+        $user = self::$controller->post([
+            'uid' => 'oauth@example.com',
+            'password' => 'test',
+            'provider' => 'email',
+            'profile' => ['source' => 'test'],
+        ]);
+
+        $this->assertCount(1, $user['credentials']);
+        $this->assertSame('email', $user['credentials'][0]['provider']);
+        $this->assertSame(['source' => 'test'], $user['credentials'][0]['profile']);
+    }
+
+    public function testPutRejectsNonArrayRoles(): void
+    {
+        $user = self::$controller->post([
+            'uid' => 'roles-update@example.com',
+            'password' => 'test',
+        ]);
+
+        $this->expectException(\Objectiveweb\Auth\UserException::class);
+        $this->expectExceptionCode(400);
+
+        self::$controller->put((int) $user['id'], ['roles' => 'admin']);
+    }
+
+    public function testPutRejectsCredentialOnlyFields(): void
+    {
+        $user = self::$controller->post([
+            'uid' => 'credential-fields@example.com',
+            'password' => 'test',
+        ]);
+
+        foreach (['provider', 'profile'] as $field) {
+            try {
+                self::$controller->put((int) $user['id'], [$field => 'invalid']);
+                $this->fail("Expected {$field} to be rejected");
+            } catch (\Objectiveweb\Auth\UserException $exception) {
+                $this->assertSame(400, $exception->getCode());
+                $this->assertSame("Invalid field `{$field}`", $exception->getMessage());
+            }
+        }
+    }
+
     public function testPut(): void
     {
         $user = self::$controller->post([
