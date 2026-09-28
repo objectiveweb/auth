@@ -65,6 +65,18 @@ abstract class Auth
         return !is_string($field) || $field === '' || empty($user[$field]);
     }
 
+    public function sanitize_user(array $user): array
+    {
+        foreach (['password', 'token', 'token_expires_field'] as $param) {
+            $field = $this->params[$param] ?? null;
+            if (is_string($field) && $field !== '') {
+                unset($user[$field]);
+            }
+        }
+
+        return $user;
+    }
+
     public function establish_session(array $user): array
     {
         if (!$this->is_active($user)) {
@@ -72,7 +84,7 @@ abstract class Auth
         }
 
         $this->regenerateSessionId();
-        $this->user($user);
+        $this->user($this->sanitize_user($user));
 
         return $this->user();
     }
@@ -135,7 +147,7 @@ abstract class Auth
 
     public function invite(int|string $userId, bool $reset = false): void
     {
-        $user = $this->get($userId);
+        $user = $this->sanitize_user($this->get($userId));
         $token = $this->update_token($userId);
         $credentials = $this->get_credentials($userId);
         $callback = $this->params[$reset ? 'reset_callback' : 'invitation_callback']
@@ -294,9 +306,7 @@ abstract class Auth
     public function &user($user = null)
     {
         if ($user) {
-            unset($user[$this->params['token']]);
-            unset($user[$this->params['password']]);
-            $_SESSION[$this->params['session_key']] = $user;
+            $_SESSION[$this->params['session_key']] = $this->sanitize_user($user);
         } else {
             if (!$this->check()) {
                 throw new Auth\UserException('Not logged in', 403);
