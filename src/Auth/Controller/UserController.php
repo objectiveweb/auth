@@ -164,8 +164,12 @@ class UserController
         $passwordField = $this->auth->params['password'];
         $password = $data[$passwordField] ?? null;
         unset($data[$passwordField]);
-        $this->assertWriteFields($data);
-        $this->assertKnownRoles((array) ($data[$this->auth->params['roles']] ?? []));
+        $this->assertWriteFields($data, true);
+        $roleField = $this->auth->params['roles'];
+        if (array_key_exists($roleField, $data)) {
+            $this->assertRolePayload($data[$roleField]);
+            $this->assertKnownRoles($data[$roleField]);
+        }
 
         $user = $this->auth->register($uid, is_string($password) && $password !== '' ? $password : null, $data);
         $id = $user[$this->auth->params['id']];
@@ -192,7 +196,8 @@ class UserController
 
         $roleField = $this->auth->params['roles'];
         if (array_key_exists($roleField, $data)) {
-            $roles = is_array($data[$roleField]) ? $data[$roleField] : [];
+            $this->assertRolePayload($data[$roleField]);
+            $roles = $data[$roleField];
             $this->assertKnownRoles($roles);
             $this->assertOwnAdminRolePreserved($userId, $roles);
             if (in_array('admin', (array) ($target[$roleField] ?? []), true) && !in_array('admin', $roles, true)) {
@@ -279,6 +284,19 @@ class UserController
         }
     }
 
+    private function assertRolePayload(mixed $roles): void
+    {
+        if (!is_array($roles)) {
+            throw new UserException('Invalid roles; expected an array', 400);
+        }
+
+        foreach ($roles as $role) {
+            if (!is_string($role) || trim($role) === '') {
+                throw new UserException('Invalid role value', 400);
+            }
+        }
+    }
+
     private function assertKnownRoles(array $roles): void
     {
         $unknown = array_values(array_diff($roles, $this->auth->get_roles()));
@@ -324,16 +342,19 @@ class UserController
         }
     }
 
-    private function assertWriteFields(array $data): void
+    private function assertWriteFields(array $data, bool $creating = false): void
     {
-        $allowed = array_values(array_unique(array_filter([
+        $allowed = [
             'name',
             'image',
-            'provider',
-            'profile',
             $this->auth->params['roles'],
             $this->auth->params['disabled_at'],
-        ])));
+        ];
+        if ($creating) {
+            $allowed[] = 'provider';
+            $allowed[] = 'profile';
+        }
+        $allowed = array_values(array_unique(array_filter($allowed)));
         foreach (array_keys($data) as $field) {
             if (!in_array((string) $field, $allowed, true)) {
                 throw new UserException("Invalid field `$field`", 400);
