@@ -37,11 +37,9 @@ class OAuthController extends AuthController
 
         $config = $this->providers[$id];
 
-        $config['redirectUri'] = sprintf("%s://%s%s%s",
-            (empty($_SERVER['HTTP_X_FORWARDED_PROTO']) ? $_SERVER['REQUEST_SCHEME'] : $_SERVER['HTTP_X_FORWARDED_PROTO']),
-            $_SERVER['HTTP_HOST'],
-            str_replace("/index.php", "", $_SERVER['PHP_SELF']),
-            $_SERVER['PATH_INFO']);
+        if (empty($config['redirectUri'])) {
+            $config['redirectUri'] = $this->resolveRedirectUri();
+        }
 
         $classname = "\\League\\OAuth2\\Client\\Provider\\" . ucfirst($id);
 
@@ -54,13 +52,15 @@ class OAuthController extends AuthController
             // generate authUrl first to update state
             $authUrl = $provider->getAuthorizationUrl();
             $_SESSION['oauth2state'] = $provider->getState();
-            error_log('oauth2state ' . $_SESSION['oauth2state']);
-            header('Location: ' . $authUrl);
-            exit;
+            return $this->redirect($authUrl);
         } elseif (empty($query['state']) || $query['state'] !== $_SESSION['oauth2state']) {
             unset($_SESSION['oauth2state']);
             throw new \Exception('Invalid state', 406);
         } else {
+            // OAuth state is single-use. Consume it before exchanging the code
+            // so a callback cannot be replayed even if the provider request fails.
+            unset($_SESSION['oauth2state']);
+
             $token = $provider->getAccessToken('authorization_code', [
                 'code' => $query['code']
             ]);
@@ -68,9 +68,35 @@ class OAuthController extends AuthController
 
             $this->login($id, $resourceOwner);
 
-            header("Location: /");
-            exit();
+            return $this->redirect('/');
         }
+    }
+
+    protected function resolveRedirectUri(): string
+    {
+        $forwardedProto = trim((string) ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? ''));
+        if ($forwardedProto !== '') {
+            $forwardedProto = trim(explode(',', $forwardedProto, 2)[0]);
+        }
+
+        $scheme = $forwardedProto !== ''
+            ? $forwardedProto
+            : (string) ($_SERVER['REQUEST_SCHEME'] ?? 'https');
+        $host = (string) ($_SERVER['HTTP_HOST'] ?? '');
+        if ($host === '') {
+            throw new \RuntimeException('Cannot determine OAuth redirect URI without HTTP_HOST');
+        }
+
+        $script = str_replace('/index.php', '', (string) ($_SERVER['PHP_SELF'] ?? ''));
+        $pathInfo = (string) ($_SERVER['PATH_INFO'] ?? '');
+
+        return sprintf('%s://%s%s%s', $scheme, $host, $script, $pathInfo);
+    }
+
+    protected function redirect(string $location): void
+    {
+        header('Location: ' . $location);
+        exit;
     }
 
     /**
