@@ -4,6 +4,7 @@ require_once dirname(__DIR__) . '/vendor/autoload.php';
 
 use Objectiveweb\Auth\AuthException;
 use Objectiveweb\Auth\DBAuth;
+use Objectiveweb\Auth\Controller\AuthController;
 use Objectiveweb\Auth\UserException;
 use Objectiveweb\DB;
 use PHPUnit\Framework\TestCase;
@@ -143,6 +144,12 @@ class DBAuthSqliteTest extends TestCase
             $user['uuid']
         );
         $this->assertSame('Alice', $user['name']);
+        $this->assertArrayNotHasKey('password', $user);
+        $this->assertArrayNotHasKey('token', $user);
+        $this->assertArrayNotHasKey('token_expires_at', $user);
+
+        $stored = self::$auth->get($user['id']);
+        $this->assertArrayHasKey('password', $stored);
 
         $logged = self::$auth->login('alice@example.com', 'secret');
         $this->assertSame($user['id'], $logged['id']);
@@ -297,6 +304,9 @@ class DBAuthSqliteTest extends TestCase
 
         $this->assertSame(1, count($list['_embedded']['auth_user']));
         $this->assertSame('Alice', $list['_embedded']['auth_user'][0]['name']);
+        $this->assertArrayNotHasKey('password', $list['_embedded']['auth_user'][0]);
+        $this->assertArrayNotHasKey('token', $list['_embedded']['auth_user'][0]);
+        $this->assertArrayNotHasKey('token_expires_at', $list['_embedded']['auth_user'][0]);
         $this->assertSame(1, $list['page']['totalElements']);
         $this->assertSame(1, $list['page']['totalPages']);
         $this->assertSame(0, $list['page']['number']);
@@ -313,7 +323,10 @@ class DBAuthSqliteTest extends TestCase
         $this->assertIsString($stored['token']);
         $this->assertTrue(password_verify($token, $stored['token']));
         $this->assertNotNull($stored['token_expires_at']);
-        self::$auth->passwd_reset($token, 'final-secret');
+        $reset = self::$auth->passwd_reset($token, 'final-secret');
+        $this->assertArrayNotHasKey('password', $reset);
+        $this->assertArrayNotHasKey('token', $reset);
+        $this->assertArrayNotHasKey('token_expires_at', $reset);
 
         $logged = self::$auth->login('alice@example.com', 'final-secret');
         $this->assertSame($user['id'], $logged['id']);
@@ -359,6 +372,65 @@ class DBAuthSqliteTest extends TestCase
         $this->assertTrue(password_verify('new-secret', $stored['password']));
         $this->assertNull($stored['token']);
         $this->assertNull($stored['token_expires_at']);
+    }
+
+    public function testAuthControllerResponsesDoNotExposeUserSecrets(): void
+    {
+        $controller = new AuthController(self::$auth);
+
+        $registered = $controller->postRegister([
+            'uid' => 'controller@example.com',
+            'password' => 'secret',
+        ]);
+        $this->assertArrayNotHasKey('password', $registered);
+        $this->assertArrayNotHasKey('token', $registered);
+        $this->assertArrayNotHasKey('token_expires_at', $registered);
+
+        $token = self::$auth->update_token($registered['id']);
+        $reset = $controller->postToken([
+            'token' => $token,
+            'password' => 'new-secret',
+            'confirm' => 'new-secret',
+        ]);
+        $this->assertArrayNotHasKey('password', $reset);
+        $this->assertArrayNotHasKey('token', $reset);
+        $this->assertArrayNotHasKey('token_expires_at', $reset);
+    }
+
+    public function testInvitationCallbackReceivesSanitizedUser(): void
+    {
+        $captured = null;
+        self::$auth->params['invitation_callback'] = function (array $user) use (&$captured): void {
+            $captured = $user;
+        };
+
+        try {
+            $user = self::$auth->register('invite@example.com', 'secret');
+            self::$auth->invite($user['id']);
+
+            $this->assertIsArray($captured);
+            $this->assertArrayNotHasKey('password', $captured);
+            $this->assertArrayNotHasKey('token', $captured);
+            $this->assertArrayNotHasKey('token_expires_at', $captured);
+        } finally {
+            self::$auth->params['invitation_callback'] = null;
+        }
+    }
+
+    public function testDuplicateCredentialExceptionDoesNotExposeUserSecrets(): void
+    {
+        self::$auth->register('duplicate@example.com', 'secret');
+
+        try {
+            self::$auth->register('duplicate@example.com', 'another-secret');
+            $this->fail('Expected duplicate credential exception');
+        } catch (UserException $exception) {
+            $user = $exception->getUser();
+            $this->assertIsArray($user);
+            $this->assertArrayNotHasKey('password', $user);
+            $this->assertArrayNotHasKey('token', $user);
+            $this->assertArrayNotHasKey('token_expires_at', $user);
+        }
     }
 
     public function testDelete(): void
