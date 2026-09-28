@@ -696,7 +696,7 @@ class DBAuth extends \Objectiveweb\Auth
             }
 
             $user[$this->params['roles']] = $this->loadUserRoles($userId);
-            $result[] = $user;
+            $result[] = $this->sanitize_user($user);
         }
 
         return $result;
