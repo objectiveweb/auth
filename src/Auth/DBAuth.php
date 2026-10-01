@@ -87,6 +87,8 @@ class DBAuth extends \Objectiveweb\Auth
                         continue;
                     }
 
+                    // Table::select() also issues a COUNT query. For OR candidate
+                    // discovery we only need IDs, so keep this as a low-level scan.
                     $rows = $this->db->select(
                         $userTableName,
                         [(string) $key => $value],
@@ -104,6 +106,8 @@ class DBAuth extends \Objectiveweb\Auth
 
         if ($q !== '') {
             $searchIds = [];
+            // Same rationale as above: this is candidate-ID discovery, not the
+            // paginated user query itself.
             $nameRows = $this->db->select(
                 $userTableName,
                 ['name' => '%' . $q . '%'],
@@ -766,7 +770,6 @@ class DBAuth extends \Objectiveweb\Auth
             return [];
         }
 
-        $userIdField = (string) $this->params['id'];
         $rolesTable = (string) $this->params['roles_table'];
         $userRolesTable = (string) $this->params['user_roles_table'];
         $userRolesUserId = (string) $this->params['user_roles_user_id'];
