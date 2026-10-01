@@ -205,6 +205,24 @@ class BasicAuthTest extends TestCase
         $this->assertSame([3, 8], $auth->get_managed_relations($user['id'])['items']);
     }
 
+    public function testQueryReturnsCollectionWithPaginationMetadata(): void
+    {
+        $this->auth->register('bob@example.com', 'secret', ['name' => 'Bob']);
+        $this->auth->register('carol@example.com', 'secret', ['name' => 'Carol']);
+
+        $result = $this->auth->query([
+            'page' => 1,
+            'size' => 2,
+            'sort' => 'name ASC',
+        ]);
+
+        $this->assertInstanceOf(\Objectiveweb\DB\Collection::class, $result);
+        $this->assertSame(3, $result->total());
+        $this->assertSame('items 2-2/3', $result->contentRange());
+        $this->assertCount(1, $result);
+        $this->assertSame('Carol', $result[0]['name']);
+    }
+
     public function testGetUsersByRoleReturnsMatchingUsers(): void
     {
         $admin = $this->auth->register('admin@example.com', 'secret', [
