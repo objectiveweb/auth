@@ -58,6 +58,53 @@ class AuthControllerTest extends TestCase
         $this->controller->postPassword(['password' => 'a', 'confirm' => 'a']);
     }
 
+    public function testPostPasswordForgotFlowDoesNotRevealUnknownCredential(): void
+    {
+        $callbackCalls = 0;
+        $auth = new BasicAuth([], [
+            'token' => 'token',
+            'token_callback' => function () use (&$callbackCalls): void {
+                $callbackCalls++;
+            },
+        ]);
+        $controller = new AuthController($auth);
+
+        $result = $controller->postPassword(['uid' => 'missing@example.com']);
+
+        $this->assertSame([], $result);
+        $this->assertSame(0, $callbackCalls);
+    }
+
+    public function testPostPasswordForgotFlowIgnoresCallbackReturnValue(): void
+    {
+        $auth = new BasicAuth([], [
+            'token' => 'token',
+            'token_callback' => fn (): array => ['account_exists' => true],
+        ]);
+        $controller = new AuthController($auth);
+        $auth->register('alice@example.com', 'secret', ['provider' => 'email']);
+
+        $result = $controller->postPassword(['uid' => 'alice@example.com']);
+
+        $this->assertSame([], $result);
+    }
+
+    public function testPostPasswordForgotFlowHidesDeliveryFailure(): void
+    {
+        $auth = new BasicAuth([], [
+            'token' => 'token',
+            'token_callback' => function (): void {
+                throw new \RuntimeException('mail transport unavailable');
+            },
+        ]);
+        $controller = new AuthController($auth);
+        $auth->register('alice@example.com', 'secret', ['provider' => 'email']);
+
+        $result = $controller->postPassword(['uid' => 'alice@example.com']);
+
+        $this->assertSame([], $result);
+    }
+
     public function testPostPasswordForgotFlowUsesEmailCredential(): void
     {
         $auth = new BasicAuth([], ['token' => 'token']);
