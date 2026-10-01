@@ -2,6 +2,8 @@
 
 namespace Objectiveweb;
 
+use Objectiveweb\DB\Collection;
+
 abstract class Auth
 {
 
@@ -339,7 +341,7 @@ abstract class Auth
 
     //
 
-    abstract public function query($params = array(), $operator = "OR");
+    abstract public function query($params = array(), $operator = "OR"): Collection;
 
     /**
      * Retrieves a user from the database
