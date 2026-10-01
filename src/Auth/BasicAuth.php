@@ -2,6 +2,8 @@
 
 namespace Objectiveweb\Auth;
 
+use Objectiveweb\DB\Collection;
+
 /**
  * Class BasicAuth
  * Basic Auth implementation with hardcoded users
@@ -39,7 +41,7 @@ class BasicAuth extends \Objectiveweb\Auth
         }
     }
 
-    public function query($params = array(), $operator = "OR")
+    public function query($params = array(), $operator = "OR"): Collection
     {
         $page = max(0, (int) ($params['page'] ?? 0));
         $size = max(1, (int) ($params['size'] ?? 20));
@@ -89,20 +91,16 @@ class BasicAuth extends \Objectiveweb\Auth
             return strtoupper($sortDirection) === 'DESC' ? -$comparison : $comparison;
         });
 
-        $count = count($matches);
-        $slice = array_slice($matches, $page * $size, $size);
+        $total = count($matches);
+        $start = $page * $size;
+        $slice = array_slice($matches, $start, $size);
 
-        return [
-            '_embedded' => [
-                $this->params['table'] => $slice,
-            ],
-            'page' => [
-                'size' => $size,
-                'number' => $page,
-                'totalElements' => $count,
-                'totalPages' => (int) ceil($count / $size),
-            ],
-        ];
+        return new Collection(
+            $slice,
+            $start,
+            $start + count($slice) - 1,
+            $total
+        );
     }
 
     public function get($user_id, $key = 'id')
