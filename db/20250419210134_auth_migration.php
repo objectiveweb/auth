@@ -41,6 +41,7 @@ class AuthMigration extends AbstractMigration
             ->addColumn('disabled_at', 'datetime', ['null' => true])
             ->addColumn('created', 'datetime', ['default' => Literal::from('now()')])
             ->addIndex(['uuid'], ['unique' => true])
+            ->addIndex(['token'])
             ->create();
 
         $user_credentials = $this->table('user_credentials', [
