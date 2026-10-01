@@ -41,63 +41,193 @@ class DBAuth extends \Objectiveweb\Auth
         $status = trim((string) ($params['status'] ?? ''));
         unset($params['page'], $params['size'], $params['sort'], $params['q'], $params['role'], $params['status']);
 
-        // Management datasets are deliberately hydrated before filtering. This
-        // keeps credential UID and managed-relation search portable across the
-        // DB abstraction's supported engines and avoids accidental inner joins
-        // that hide users without roles.
-        $rows = $this->db->select($this->params['table'])->all();
-        $data = [];
-        foreach ($rows as $row) {
-            $hydrated = $this->hydrateUserRow($row);
-            if (!$this->matchesUserFilters($hydrated, $params, $operator)) {
-                continue;
-            }
+        $userTable = (string) $this->params['table'];
+        $userIdField = (string) $this->params['id'];
+        [$sortField, $sortDirection] = array_pad(preg_split('/\s+/', trim($sort), 2), 2, 'ASC');
+        $sortDirection = strtoupper($sortDirection);
+        if (!in_array($sortDirection, ['ASC', 'DESC'], true)) {
+            throw new \InvalidArgumentException('Invalid sort direction');
+        }
 
-            $credentials = $this->get_credentials($hydrated[$this->params['id']]);
-            if ($q !== '') {
-                $haystack = strtolower(implode(' ', array_merge(
-                    [
-                        (string) ($hydrated['name'] ?? ''),
-                        (string) ($hydrated[$this->params['id']] ?? ''),
-                    ],
-                    array_map(fn (array $credential): string => (string) ($credential['uid'] ?? ''), $credentials)
-                )));
-                if (!str_contains($haystack, strtolower($q))) {
-                    continue;
+        $where = [];
+        $candidateIds = null;
+        $operator = strtoupper((string) $operator);
+
+        if ($params !== []) {
+            if ($operator === 'AND') {
+                foreach ($params as $key => $value) {
+                    if ($key === 'uid') {
+                        $credential = $this->get_credential('local', $value);
+                        $candidateIds = $this->intersectUserIds(
+                            $candidateIds,
+                            $credential && isset($credential['user_id']) ? [$credential['user_id']] : []
+                        );
+                        continue;
+                    }
+
+                    $where[(string) $key] = $value;
+                }
+            } else {
+                $filterIds = [];
+                foreach ($params as $key => $value) {
+                    if ($key === 'uid') {
+                        $credential = $this->get_credential('local', $value);
+                        if ($credential && isset($credential['user_id'])) {
+                            $filterIds[] = $credential['user_id'];
+                        }
+                        continue;
+                    }
+
+                    $rows = $this->db->select(
+                        $userTable,
+                        [(string) $key => $value],
+                        ['fields' => [$userIdField]]
+                    )->all();
+                    foreach ($rows as $row) {
+                        if (array_key_exists($userIdField, $row)) {
+                            $filterIds[] = $row[$userIdField];
+                        }
+                    }
+                }
+                $candidateIds = $this->intersectUserIds($candidateIds, $filterIds);
+            }
+        }
+
+        if ($q !== '') {
+            $searchIds = [];
+            $nameRows = $this->db->select(
+                $userTable,
+                ['name' => '%' . $q . '%'],
+                ['fields' => [$userIdField]]
+            )->all();
+            foreach ($nameRows as $row) {
+                if (array_key_exists($userIdField, $row)) {
+                    $searchIds[] = $row[$userIdField];
                 }
             }
 
-            $roles = is_array($hydrated[$this->params['roles']] ?? null)
-                ? $hydrated[$this->params['roles']]
-                : [];
-            if ($role === 'unassigned' && $roles !== []) {
-                continue;
-            }
-            if ($role !== '' && $role !== 'unassigned' && !in_array($role, $roles, true)) {
-                continue;
-            }
-            if ($status === 'active' && !$this->is_active($hydrated)) {
-                continue;
-            }
-            if ($status === 'suspended' && $this->is_active($hydrated)) {
-                continue;
+            if (ctype_digit($q)) {
+                $idRow = $this->db->select(
+                    $userTable,
+                    [$userIdField => $q],
+                    ['fields' => [$userIdField], 'limit' => 1]
+                )->fetch();
+                if ($idRow && array_key_exists($userIdField, $idRow)) {
+                    $searchIds[] = $idRow[$userIdField];
+                }
             }
 
-            $hydrated['credentials'] = $credentials;
+            $credentialRows = $this->db->select(
+                (string) $this->params['credentials_table'],
+                ['uid' => '%' . $q . '%'],
+                ['fields' => ['user_id']]
+            )->all();
+            foreach ($credentialRows as $row) {
+                if (array_key_exists('user_id', $row)) {
+                    $searchIds[] = $row['user_id'];
+                }
+            }
+
+            $candidateIds = $this->intersectUserIds($candidateIds, $searchIds);
+        }
+
+        if ($role !== '') {
+            if (!$this->rolesEnabled()) {
+                $candidateIds = $this->intersectUserIds($candidateIds, []);
+            } elseif ($role === 'unassigned') {
+                $assigned = $this->db->select(
+                    (string) $this->params['user_roles_table'],
+                    null,
+                    ['fields' => [(string) $this->params['user_roles_user_id']]]
+                )->all();
+                $assignedIds = array_values(array_unique(array_map(
+                    fn (array $row): mixed => $row[(string) $this->params['user_roles_user_id']] ?? null,
+                    $assigned
+                )));
+                $assignedIds = array_values(array_filter($assignedIds, fn (mixed $id): bool => $id !== null));
+                if ($assignedIds !== []) {
+                    $where['!' . $userIdField] = $assignedIds;
+                }
+            } else {
+                $roleRow = $this->db->select(
+                    (string) $this->params['roles_table'],
+                    [(string) $this->params['role_name'] => $role],
+                    ['fields' => [(string) $this->params['role_id']], 'limit' => 1]
+                )->fetch();
+
+                $roleUserIds = [];
+                if ($roleRow && array_key_exists((string) $this->params['role_id'], $roleRow)) {
+                    $memberships = $this->db->select(
+                        (string) $this->params['user_roles_table'],
+                        [(string) $this->params['user_roles_role_id'] => $roleRow[(string) $this->params['role_id']]],
+                        ['fields' => [(string) $this->params['user_roles_user_id']]]
+                    )->all();
+                    foreach ($memberships as $membership) {
+                        $id = $membership[(string) $this->params['user_roles_user_id']] ?? null;
+                        if ($id !== null) {
+                            $roleUserIds[] = $id;
+                        }
+                    }
+                }
+                $candidateIds = $this->intersectUserIds($candidateIds, $roleUserIds);
+            }
+        }
+
+        if ($status !== '') {
+            $disabledField = $this->params['disabled_at'];
+            if (!is_string($disabledField) || $disabledField === '') {
+                if ($status === 'suspended') {
+                    $candidateIds = $this->intersectUserIds($candidateIds, []);
+                }
+            } elseif ($status === 'active') {
+                $where[$disabledField] = null;
+            } elseif ($status === 'suspended') {
+                $where['!' . $disabledField] = null;
+            }
+        }
+
+        if ($candidateIds !== null) {
+            if ($candidateIds === []) {
+                return $this->emptyQueryResult($page, $size);
+            }
+
+            if (array_key_exists($userIdField, $where)) {
+                $requestedIds = is_array($where[$userIdField])
+                    ? $where[$userIdField]
+                    : [$where[$userIdField]];
+                $candidateIds = $this->intersectUserIds($candidateIds, $requestedIds);
+                if ($candidateIds === []) {
+                    return $this->emptyQueryResult($page, $size);
+                }
+            }
+            $where[$userIdField] = $candidateIds;
+        }
+
+        $count = $this->db->count($userTable, $where);
+        if ($count === 0) {
+            return $this->emptyQueryResult($page, $size);
+        }
+
+        $rows = $this->db->select(
+            $userTable,
+            $where,
+            [
+                'order' => [$sortField, $sortDirection],
+                'limit' => $size,
+                'offset' => $page * $size,
+            ]
+        )->all();
+
+        $data = [];
+        foreach ($rows as $row) {
+            $hydrated = $this->hydrateUserRow($row);
+            $hydrated['credentials'] = $this->get_credentials($hydrated[$userIdField]);
             $data[] = $this->sanitize_user($hydrated);
         }
 
-        [$sortField, $sortDirection] = array_pad(preg_split('/\s+/', trim($sort), 2), 2, 'ASC');
-        usort($data, static function (array $a, array $b) use ($sortField, $sortDirection): int {
-            $comparison = ($a[$sortField] ?? null) <=> ($b[$sortField] ?? null);
-            return strtoupper($sortDirection) === 'DESC' ? -$comparison : $comparison;
-        });
-        $count = count($data);
-        $slice = array_slice($data, $page * $size, $size);
-
         return [
             '_embedded' => [
-                $this->params['table'] => $slice,
+                $userTable => $data,
             ],
             'page' => [
                 'size' => $size,
@@ -375,8 +505,7 @@ class DBAuth extends \Objectiveweb\Auth
         }
 
         $token = self::hash();
-        $tokenHash = self::hash($token);
-        $payload = [$this->params['token'] => $tokenHash];
+        $payload = [$this->params['token'] => $this->resetTokenDigest($token)];
         $tokenExpiresField = $this->params['token_expires_field'];
         if (is_string($tokenExpiresField) && $tokenExpiresField !== '') {
             $ttl = max(60, (int) $this->params['token_ttl']);
@@ -1033,65 +1162,67 @@ class DBAuth extends \Objectiveweb\Auth
         $table = (string) $this->params['table'];
         $tokenField = (string) $this->params['token'];
         $tokenExpiresField = $this->params['token_expires_field'];
-        $now = date('Y-m-d H:i:s');
 
-        // Use DB::select() so configured table prefixes and identifier quoting
-        // are applied consistently. Token hashes cannot be queried directly,
-        // because password_verify() must compare the supplied token in PHP.
-        $rows = $this->db->select($table, ['!' . $tokenField => null])->all();
-        foreach ($rows as $row) {
-            if (is_string($tokenExpiresField) && $tokenExpiresField !== '') {
-                $expiresAt = $row[$tokenExpiresField] ?? null;
-                if (!is_string($expiresAt) || $expiresAt < $now) {
+        $row = $this->db->select(
+            $table,
+            [$tokenField => $this->resetTokenDigest($token)],
+            ['limit' => 1]
+        )->fetch();
+        if (!$row) {
+            return null;
+        }
+
+        if (is_string($tokenExpiresField) && $tokenExpiresField !== '') {
+            $expiresAt = $row[$tokenExpiresField] ?? null;
+            if (!is_string($expiresAt) || $expiresAt < date('Y-m-d H:i:s')) {
+                return null;
+            }
+        }
+
+        return $row;
+    }
+
+    private function resetTokenDigest(string $token): string
+    {
+        return hash('sha256', $token);
+    }
+
+    private function intersectUserIds(?array $current, array $next): array
+    {
+        $normalize = static function (array $ids): array {
+            $normalized = [];
+            foreach ($ids as $id) {
+                if ($id === null) {
                     continue;
                 }
+                $normalized[(string) $id] = $id;
             }
+            return $normalized;
+        };
 
-            $candidateHash = (string) ($row[$tokenField] ?? '');
-            if ($candidateHash === '') {
-                continue;
-            }
-
-            if (\password_verify($token, $candidateHash)) {
-                return $row;
-            }
+        $nextMap = $normalize($next);
+        if ($current === null) {
+            return array_values($nextMap);
         }
 
-        return null;
+        $currentMap = $normalize($current);
+        return array_values(array_intersect_key($currentMap, $nextMap));
     }
 
-    private function matchesUserFilters(array $row, array $filters, string $operator): bool
+    private function emptyQueryResult(int $page, int $size): array
     {
-        if ($filters === []) {
-            return true;
-        }
-        $matches = [];
-        foreach ($filters as $key => $value) {
-            if ($key === 'uid') {
-                $matches[] = $this->get_credential('local', $value)
-                    && (($this->get_credential('local', $value)['user_id'] ?? null) == ($row[$this->params['id']] ?? null));
-                continue;
-            }
-            $actual = $row[$key] ?? null;
-            if (is_string($value) && str_contains($value, '%')) {
-                $needle = strtolower(str_replace('%', '', $value));
-                $matches[] = str_contains(strtolower((string) $actual), $needle);
-            } else {
-                $matches[] = $actual == $value;
-            }
-        }
-        return strtoupper($operator) === 'AND'
-            ? !in_array(false, $matches, true)
-            : in_array(true, $matches, true);
+        return [
+            '_embedded' => [
+                $this->params['table'] => [],
+            ],
+            'page' => [
+                'size' => $size,
+                'number' => $page,
+                'totalElements' => 0,
+                'totalPages' => 0,
+            ],
+        ];
     }
 
-    private function uuidV4(): string
-    {
-        $data = random_bytes(16);
-        $data[6] = chr((ord($data[6]) & 0x0f) | 0x40);
-        $data[8] = chr((ord($data[8]) & 0x3f) | 0x80);
-
-        return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($data), 4));
-    }
 
 }
