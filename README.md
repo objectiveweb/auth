@@ -227,6 +227,8 @@ $token = $auth->update_token($credential['user_id']);
 $auth->passwd_reset($token, 'new-password');
 ```
 
+`DBAuth` stores only a SHA-256 digest of the high-entropy reset token and looks it up through the indexed token column. The plaintext token is returned only once for delivery.
+
 ## Credential strategy (`local`, `email`, `phone`, social)
 
 Recommended model:
