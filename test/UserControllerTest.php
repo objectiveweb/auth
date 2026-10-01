@@ -120,11 +120,11 @@ class UserControllerTest extends TestCase
 
         $all = self::$controller->get();
 
-        $this->assertSame(1, count($all['_embedded']['auth_user']));
-        $this->assertSame('Test User', $all['_embedded']['auth_user'][0]['name']);
-        $this->assertSame(1, $all['page']['totalElements']);
-        $this->assertSame(1, $all['page']['totalPages']);
-        $this->assertSame(0, $all['page']['number']);
+        $this->assertInstanceOf(\Objectiveweb\DB\Collection::class, $all);
+        $this->assertCount(1, $all);
+        $this->assertSame(1, $all->total());
+        $this->assertSame('items 0-0/1', $all->contentRange());
+        $this->assertSame('Test User', $all[0]['name']);
     }
 
     public function testQueryInvalidFilterField(): void
