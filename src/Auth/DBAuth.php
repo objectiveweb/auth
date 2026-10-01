@@ -133,7 +133,9 @@ class DBAuth extends \Objectiveweb\Auth
 
         if ($role !== '') {
             if (!$this->rolesEnabled()) {
-                $candidateIds = $this->intersectUserIds($candidateIds, []);
+                if ($role !== 'unassigned') {
+                    $candidateIds = $this->intersectUserIds($candidateIds, []);
+                }
             } elseif ($role === 'unassigned') {
                 $assigned = $this->db->select(
                     (string) $this->params['user_roles_table'],
