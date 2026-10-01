@@ -3,6 +3,7 @@
 namespace Objectiveweb\Auth;
 
 use Objectiveweb\DB;
+use Objectiveweb\DB\Collection;
 
 class DBAuth extends \Objectiveweb\Auth
 {
@@ -31,7 +32,7 @@ class DBAuth extends \Objectiveweb\Auth
         $this->assertRoleConfig();
     }
 
-    public function query($params = array(), $operator = "OR")
+    public function query($params = array(), $operator = "OR"): Collection
     {
         $page = max(0, (int) ($params['page'] ?? 0));
         $size = max(1, (int) ($params['size'] ?? 20));
@@ -41,8 +42,10 @@ class DBAuth extends \Objectiveweb\Auth
         $status = trim((string) ($params['status'] ?? ''));
         unset($params['page'], $params['size'], $params['sort'], $params['q'], $params['role'], $params['status']);
 
-        $userTable = (string) $this->params['table'];
+        $userTableName = (string) $this->params['table'];
         $userIdField = (string) $this->params['id'];
+        $userTable = $this->db->table($userTableName, ['pk' => $userIdField]);
+
         [$sortField, $sortDirection] = array_pad(preg_split('/\s+/', trim($sort), 2), 2, 'ASC');
         $sortDirection = strtoupper($sortDirection);
         if (!in_array($sortDirection, ['ASC', 'DESC'], true)) {
@@ -79,7 +82,7 @@ class DBAuth extends \Objectiveweb\Auth
                     }
 
                     $rows = $this->db->select(
-                        $userTable,
+                        $userTableName,
                         [(string) $key => $value],
                         ['fields' => [$userIdField]]
                     )->all();
@@ -96,7 +99,7 @@ class DBAuth extends \Objectiveweb\Auth
         if ($q !== '') {
             $searchIds = [];
             $nameRows = $this->db->select(
-                $userTable,
+                $userTableName,
                 ['name' => '%' . $q . '%'],
                 ['fields' => [$userIdField]]
             )->all();
@@ -108,7 +111,7 @@ class DBAuth extends \Objectiveweb\Auth
 
             if (ctype_digit($q)) {
                 $idRow = $this->db->select(
-                    $userTable,
+                    $userTableName,
                     [$userIdField => $q],
                     ['fields' => [$userIdField], 'limit' => 1]
                 )->fetch();
@@ -190,7 +193,7 @@ class DBAuth extends \Objectiveweb\Auth
 
         if ($candidateIds !== null) {
             if ($candidateIds === []) {
-                return $this->emptyQueryResult($page, $size);
+                return new Collection([], $page * $size, ($page * $size) - 1, 0);
             }
 
             if (array_key_exists($userIdField, $where)) {
@@ -199,45 +202,29 @@ class DBAuth extends \Objectiveweb\Auth
                     : [$where[$userIdField]];
                 $candidateIds = $this->intersectUserIds($candidateIds, $requestedIds);
                 if ($candidateIds === []) {
-                    return $this->emptyQueryResult($page, $size);
+                    return new Collection([], $page * $size, ($page * $size) - 1, 0);
                 }
             }
             $where[$userIdField] = $candidateIds;
         }
 
-        $count = $this->db->count($userTable, $where);
-        if ($count === 0) {
-            return $this->emptyQueryResult($page, $size);
-        }
-
-        $rows = $this->db->select(
-            $userTable,
+        $start = $page * $size;
+        $collection = $userTable->select(
             $where,
             [
-                'order' => [$sortField, $sortDirection],
-                'limit' => $size,
-                'offset' => $page * $size,
+                'sort' => [$sortField, $sortDirection],
+                'range' => [$start, $start + $size - 1],
             ]
-        )->all();
+        );
 
-        $data = [];
-        foreach ($rows as $row) {
+        foreach ($collection as &$row) {
             $hydrated = $this->hydrateUserRow($row);
             $hydrated['credentials'] = $this->get_credentials($hydrated[$userIdField]);
-            $data[] = $this->sanitize_user($hydrated);
+            $row = $this->sanitize_user($hydrated);
         }
+        unset($row);
 
-        return [
-            '_embedded' => [
-                $userTable => $data,
-            ],
-            'page' => [
-                'size' => $size,
-                'number' => $page,
-                'totalElements' => $count,
-                'totalPages' => (int) ceil($count / $size),
-            ],
-        ];
+        return $collection;
     }
 
     public function get($user_id, $key = 'id')
@@ -1209,21 +1196,6 @@ class DBAuth extends \Objectiveweb\Auth
 
         $currentMap = $normalize($current);
         return array_values(array_intersect_key($currentMap, $nextMap));
-    }
-
-    private function emptyQueryResult(int $page, int $size): array
-    {
-        return [
-            '_embedded' => [
-                $this->params['table'] => [],
-            ],
-            'page' => [
-                'size' => $size,
-                'number' => $page,
-                'totalElements' => 0,
-                'totalPages' => 0,
-            ],
-        ];
     }
 
     private function uuidV4(): string
