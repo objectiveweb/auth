@@ -229,6 +229,8 @@ $auth->passwd_reset($token, 'new-password');
 
 `DBAuth` stores only a SHA-256 digest of the high-entropy reset token and looks it up through the indexed token column. The plaintext token is returned only once for delivery.
 
+Anonymous password-recovery requests intentionally return the same empty success payload whether or not the supplied UID exists. Recovery callbacks are delivery-only: their return value is not exposed, and delivery failures do not change the anonymous response. Applications should still rate-limit recovery requests at the HTTP/application edge.
+
 ## Credential strategy (`local`, `email`, `phone`, social)
 
 Recommended model:
