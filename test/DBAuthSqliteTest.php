@@ -304,14 +304,14 @@ class DBAuthSqliteTest extends TestCase
         self::$auth->register('alice@example.com', 'secret', ['name' => 'Alice']);
         $list = self::$auth->query();
 
-        $this->assertSame(1, count($list['_embedded']['auth_user']));
-        $this->assertSame('Alice', $list['_embedded']['auth_user'][0]['name']);
-        $this->assertArrayNotHasKey('password', $list['_embedded']['auth_user'][0]);
-        $this->assertArrayNotHasKey('token', $list['_embedded']['auth_user'][0]);
-        $this->assertArrayNotHasKey('token_expires_at', $list['_embedded']['auth_user'][0]);
-        $this->assertSame(1, $list['page']['totalElements']);
-        $this->assertSame(1, $list['page']['totalPages']);
-        $this->assertSame(0, $list['page']['number']);
+        $this->assertInstanceOf(\Objectiveweb\DB\Collection::class, $list);
+        $this->assertCount(1, $list);
+        $this->assertSame(1, $list->total());
+        $this->assertSame('items 0-0/1', $list->contentRange());
+        $this->assertSame('Alice', $list[0]['name']);
+        $this->assertArrayNotHasKey('password', $list[0]);
+        $this->assertArrayNotHasKey('token', $list[0]);
+        $this->assertArrayNotHasKey('token_expires_at', $list[0]);
     }
 
     public function testQueryPaginatesAndSortsBeforeHydration(): void
@@ -331,12 +331,13 @@ class DBAuthSqliteTest extends TestCase
             'sort' => 'name ASC',
         ]);
 
-        $this->assertSame(3, $first['page']['totalElements']);
-        $this->assertSame(2, $first['page']['totalPages']);
-        $this->assertSame(['Alice', 'Bob'], array_column($first['_embedded']['auth_user'], 'name'));
-        $this->assertSame(['Charlie'], array_column($second['_embedded']['auth_user'], 'name'));
+        $this->assertSame(3, $first->total());
+        $this->assertSame('items 0-1/3', $first->contentRange());
+        $this->assertSame('items 2-2/3', $second->contentRange());
+        $this->assertSame(['Alice', 'Bob'], array_column($first->data(), 'name'));
+        $this->assertSame(['Charlie'], array_column($second->data(), 'name'));
 
-        foreach ($first['_embedded']['auth_user'] as $user) {
+        foreach ($first as $user) {
             $this->assertArrayHasKey('credentials', $user);
             $this->assertCount(1, $user['credentials']);
         }
@@ -365,12 +366,12 @@ class DBAuthSqliteTest extends TestCase
             'size' => 10,
         ]);
 
-        $this->assertSame(1, $result['page']['totalElements']);
-        $this->assertSame('Active Admin', $result['_embedded']['auth_user'][0]['name']);
-        $this->assertSame(['admin'], $result['_embedded']['auth_user'][0]['roles']);
+        $this->assertSame(1, $result->total());
+        $this->assertSame('Active Admin', $result[0]['name']);
+        $this->assertSame(['admin'], $result[0]['roles']);
         $this->assertSame(
             'active-admin@example.com',
-            $result['_embedded']['auth_user'][0]['credentials'][0]['uid']
+            $result[0]['credentials'][0]['uid']
         );
     }
 
@@ -380,8 +381,8 @@ class DBAuthSqliteTest extends TestCase
         self::$auth->register('unassigned@example.com', 'secret');
 
         $withRoles = self::$auth->query(['role' => 'unassigned', 'size' => 10]);
-        $this->assertSame(1, $withRoles['page']['totalElements']);
-        $this->assertSame('unassigned', $withRoles['_embedded']['auth_user'][0]['name']);
+        $this->assertSame(1, $withRoles->total());
+        $this->assertSame('unassigned', $withRoles[0]['name']);
 
         $withoutRoles = new DBAuth(self::$db, [
             'table' => 'auth_user',
@@ -394,7 +395,7 @@ class DBAuthSqliteTest extends TestCase
             'user_roles_table' => null,
         ]);
         $result = $withoutRoles->query(['role' => 'unassigned', 'size' => 10]);
-        $this->assertSame(2, $result['page']['totalElements']);
+        $this->assertSame(2, $result->total());
     }
 
     public function testRequestToken(): void
@@ -919,7 +920,7 @@ class DBAuthSqliteTest extends TestCase
         $this->assertSame(['partner'], self::$auth->get_roles());
 
         $result = self::$auth->query(['q' => 'searchable@example.com', 'size' => 10]);
-        $this->assertSame(1, $result['page']['totalElements']);
-        $this->assertSame('searchable@example.com', $result['_embedded']['auth_user'][0]['credentials'][0]['uid']);
+        $this->assertSame(1, $result->total());
+        $this->assertSame('searchable@example.com', $result[0]['credentials'][0]['uid']);
     }
 }
