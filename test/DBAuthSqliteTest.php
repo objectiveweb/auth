@@ -32,6 +32,8 @@ class DBAuthSqliteTest extends TestCase
             )'
         )->exec();
 
+        self::$db->query('CREATE INDEX auth_user_token_idx ON auth_user(token)')->exec();
+
         self::$db->query(
             'CREATE TABLE auth_credentials (
                 uid TEXT NOT NULL,
@@ -312,6 +314,89 @@ class DBAuthSqliteTest extends TestCase
         $this->assertSame(0, $list['page']['number']);
     }
 
+    public function testQueryPaginatesAndSortsBeforeHydration(): void
+    {
+        self::$auth->register('charlie@example.com', 'secret', ['name' => 'Charlie']);
+        self::$auth->register('alice@example.com', 'secret', ['name' => 'Alice']);
+        self::$auth->register('bob@example.com', 'secret', ['name' => 'Bob']);
+
+        $first = self::$auth->query([
+            'page' => 0,
+            'size' => 2,
+            'sort' => 'name ASC',
+        ]);
+        $second = self::$auth->query([
+            'page' => 1,
+            'size' => 2,
+            'sort' => 'name ASC',
+        ]);
+
+        $this->assertSame(3, $first['page']['totalElements']);
+        $this->assertSame(2, $first['page']['totalPages']);
+        $this->assertSame(['Alice', 'Bob'], array_column($first['_embedded']['auth_user'], 'name'));
+        $this->assertSame(['Charlie'], array_column($second['_embedded']['auth_user'], 'name'));
+
+        foreach ($first['_embedded']['auth_user'] as $user) {
+            $this->assertArrayHasKey('credentials', $user);
+            $this->assertCount(1, $user['credentials']);
+        }
+    }
+
+    public function testQueryCombinesSearchRoleAndLifecycleFilters(): void
+    {
+        self::$auth->register('active-admin@example.com', 'secret', [
+            'name' => 'Active Admin',
+            'roles' => ['admin'],
+        ]);
+        self::$auth->register('suspended-admin@example.com', 'secret', [
+            'name' => 'Suspended Admin',
+            'roles' => ['admin'],
+            'disabled_at' => '2026-09-30 12:00:00',
+        ]);
+        self::$auth->register('active-viewer@example.com', 'secret', [
+            'name' => 'Active Viewer',
+            'roles' => ['viewer'],
+        ]);
+
+        $result = self::$auth->query([
+            'q' => 'admin@example.com',
+            'role' => 'admin',
+            'status' => 'active',
+            'size' => 10,
+        ]);
+
+        $this->assertSame(1, $result['page']['totalElements']);
+        $this->assertSame('Active Admin', $result['_embedded']['auth_user'][0]['name']);
+        $this->assertSame(['admin'], $result['_embedded']['auth_user'][0]['roles']);
+        $this->assertSame(
+            'active-admin@example.com',
+            $result['_embedded']['auth_user'][0]['credentials'][0]['uid']
+        );
+    }
+
+    public function testQueryUnassignedWorksWithAndWithoutRoleTables(): void
+    {
+        self::$auth->register('assigned@example.com', 'secret', ['roles' => ['admin']]);
+        self::$auth->register('unassigned@example.com', 'secret');
+
+        $withRoles = self::$auth->query(['role' => 'unassigned', 'size' => 10]);
+        $this->assertSame(1, $withRoles['page']['totalElements']);
+        $this->assertSame('unassigned', $withRoles['_embedded']['auth_user'][0]['name']);
+
+        $withoutRoles = new DBAuth(self::$db, [
+            'table' => 'auth_user',
+            'credentials_table' => 'auth_credentials',
+            'created' => 'created',
+            'token' => 'token',
+            'credentials_last_login' => 'last_login',
+            'credentials_created' => 'created',
+            'roles_table' => null,
+            'user_roles_table' => null,
+        ]);
+        $result = $withoutRoles->query(['role' => 'unassigned', 'size' => 10]);
+        $this->assertSame(2, $result['page']['totalElements']);
+    }
+
     public function testRequestToken(): void
     {
         $user = self::$auth->register('alice@example.com', 'secret');
@@ -321,7 +406,8 @@ class DBAuthSqliteTest extends TestCase
         $token = self::$auth->update_token($account['user_id']);
         $stored = self::$db->select('auth_user', ['id' => $account['user_id']], ['limit' => 1])->fetch();
         $this->assertIsString($stored['token']);
-        $this->assertTrue(password_verify($token, $stored['token']));
+        $this->assertSame(hash('sha256', $token), $stored['token']);
+        $this->assertSame(64, strlen($stored['token']));
         $this->assertNotNull($stored['token_expires_at']);
         $reset = self::$auth->passwd_reset($token, 'final-secret');
         $this->assertArrayNotHasKey('password', $reset);
