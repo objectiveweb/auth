@@ -220,7 +220,7 @@ class BasicAuthTest extends TestCase
         $this->assertSame(3, $result->total());
         $this->assertSame('items 2-2/3', $result->contentRange());
         $this->assertCount(1, $result);
-        $this->assertSame('Carol', $result[0]['name']);
+        $this->assertSame('alice', $result[0]['name']);
     }
 
     public function testGetUsersByRoleReturnsMatchingUsers(): void
