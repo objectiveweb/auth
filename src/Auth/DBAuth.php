@@ -4,10 +4,13 @@ namespace Objectiveweb\Auth;
 
 use Objectiveweb\DB;
 use Objectiveweb\DB\Collection;
+use Objectiveweb\DB\Exception\NotFoundException;
+use Objectiveweb\DB\Table;
 
 class DBAuth extends \Objectiveweb\Auth
 {
     public array $params;
+    private Table $userTable;
 
     public function __construct(private DB $db, array $params = [])
     {
@@ -29,6 +32,10 @@ class DBAuth extends \Objectiveweb\Auth
         ];
 
         parent::__construct(array_merge($defaults, $params));
+        $this->userTable = $this->db->table(
+            (string) $this->params['table'],
+            ['pk' => (string) $this->params['id']]
+        );
         $this->assertRoleConfig();
     }
 
@@ -44,7 +51,6 @@ class DBAuth extends \Objectiveweb\Auth
 
         $userTableName = (string) $this->params['table'];
         $userIdField = (string) $this->params['id'];
-        $userTable = $this->db->table($userTableName, ['pk' => $userIdField]);
 
         [$sortField, $sortDirection] = array_pad(preg_split('/\s+/', trim($sort), 2), 2, 'ASC');
         $sortDirection = strtoupper($sortDirection);
@@ -209,7 +215,7 @@ class DBAuth extends \Objectiveweb\Auth
         }
 
         $start = $page * $size;
-        $collection = $userTable->select(
+        $collection = $this->userTable->select(
             $where,
             [
                 'sort' => [$sortField, $sortDirection],
@@ -229,11 +235,23 @@ class DBAuth extends \Objectiveweb\Auth
 
     public function get($user_id, $key = 'id')
     {
-        $column = $this->params[$key] ?? $key;
-        $row = $this->db->select($this->params['table'], [$column => $user_id], ['limit' => 1])->fetch();
+        $column = (string) ($this->params[$key] ?? $key);
 
-        if (!$row) {
-            throw new UserException('User not found', 404);
+        if ($column === (string) $this->params['id']) {
+            try {
+                $row = $this->userTable->get($user_id);
+            } catch (NotFoundException) {
+                throw new UserException('User not found', 404);
+            }
+        } else {
+            $rows = $this->userTable->select(
+                [$column => $user_id],
+                ['range' => [0, 0]]
+            );
+            if (count($rows) === 0) {
+                throw new UserException('User not found', 404);
+            }
+            $row = $rows[0];
         }
 
         return $this->hydrateUserRow($row);
@@ -304,13 +322,15 @@ class DBAuth extends \Objectiveweb\Auth
             if ($syncRoles) {
                 $this->resolveRoleIds($roles);
             }
-            $id = $this->db->insert($this->params['table'], $fields);
-            if (!$id) {
+            $inserted = $this->userTable->insert($fields);
+            $idField = (string) $this->params['id'];
+            $id = $inserted[$idField] ?? null;
+            if ($id === null || $id === '') {
                 throw new \Exception('Could not create user');
             }
 
             $userId = ctype_digit((string) $id) ? (int) $id : $id;
-            $fields[$this->params['id']] = $userId;
+            $fields[$idField] = $userId;
 
             $credentialPayload = [
                 'user_id' => $userId,
@@ -339,11 +359,10 @@ class DBAuth extends \Objectiveweb\Auth
     public function passwd($user_id, $password, $key = 'id')
     {
         $column = $this->params[$key] ?? $key;
-        $updated = $this->db->update(
-            $this->params['table'],
-            [$this->params['password'] => self::hash($password)],
-            [$column => $user_id]
-        );
+        $updated = $this->userTable->update(
+            [$column => $user_id],
+            [$this->params['password'] => self::hash($password)]
+        )['updated'];
 
         if ($updated !== 1) {
             throw new UserException('User not found', 404);
@@ -372,11 +391,10 @@ class DBAuth extends \Objectiveweb\Auth
             $payload[$tokenExpiresField] = null;
         }
 
-        $updated = $this->db->update(
-            $this->params['table'],
-            $payload,
-            [$this->params['id'] => $user[$this->params['id']]]
-        );
+        $updated = $this->userTable->update(
+            $user[$this->params['id']],
+            $payload
+        )['updated'];
 
         if ($updated !== 1) {
             throw new UserException('Hash not found', 404);
@@ -422,7 +440,7 @@ class DBAuth extends \Objectiveweb\Auth
                 }
             }
 
-            $this->db->update($this->params['table'], $data, [$column => $user_id]);
+            $this->userTable->update([$column => $user_id], $data);
         }
 
         if ($syncRoles) {
@@ -477,7 +495,7 @@ class DBAuth extends \Objectiveweb\Auth
                 }
             }
             $this->audit('user.deleted', $user_id);
-            $deleted = $this->db->delete($this->params['table'], [$this->params['id'] => $user_id]);
+            $deleted = $this->userTable->delete($user_id);
 
             if ($deleted !== 1) {
                 throw new UserException('User not found', 404);
@@ -501,11 +519,7 @@ class DBAuth extends \Objectiveweb\Auth
             $payload[$tokenExpiresField] = date('Y-m-d H:i:s', time() + $ttl);
         }
 
-        $updated = $this->db->update(
-            $this->params['table'],
-            $payload,
-            [$this->params['id'] => $user_id]
-        );
+        $updated = $this->userTable->update($user_id, $payload)['updated'];
 
         if ($updated !== 1) {
             throw new UserException('Token not found', 404);
@@ -753,7 +767,6 @@ class DBAuth extends \Objectiveweb\Auth
         }
 
         $userIdField = (string) $this->params['id'];
-        $userTable = (string) $this->params['table'];
         $rolesTable = (string) $this->params['roles_table'];
         $userRolesTable = (string) $this->params['user_roles_table'];
         $userRolesUserId = (string) $this->params['user_roles_user_id'];
@@ -779,14 +792,6 @@ class DBAuth extends \Objectiveweb\Auth
             ]
         )->all();
 
-        $safeFields = ['name', 'image', $userIdField];
-        foreach (['uuid', 'created', 'last_login', 'disabled_at', 'token_expires_field'] as $paramKey) {
-            $field = $this->params[$paramKey] ?? null;
-            if (is_string($field) && $field !== '' && !in_array($field, $safeFields, true)) {
-                $safeFields[] = $field;
-            }
-        }
-
         $result = [];
         $seen = [];
         foreach ($memberships as $membership) {
@@ -801,15 +806,9 @@ class DBAuth extends \Objectiveweb\Auth
             }
             $seen[$identity] = true;
 
-            $user = $this->db->select(
-                $userTable,
-                [$userIdField => $userId],
-                [
-                    'fields' => $safeFields,
-                    'limit' => 1,
-                ]
-            )->fetch();
-            if (!$user) {
+            try {
+                $user = $this->userTable->get($userId);
+            } catch (NotFoundException) {
                 continue;
             }
 
@@ -1148,18 +1147,17 @@ class DBAuth extends \Objectiveweb\Auth
 
     private function findUserByResetToken(string $token): ?array
     {
-        $table = (string) $this->params['table'];
         $tokenField = (string) $this->params['token'];
         $tokenExpiresField = $this->params['token_expires_field'];
 
-        $row = $this->db->select(
-            $table,
+        $rows = $this->userTable->select(
             [$tokenField => $this->resetTokenDigest($token)],
-            ['limit' => 1]
-        )->fetch();
-        if (!$row) {
+            ['range' => [0, 0]]
+        );
+        if (count($rows) === 0) {
             return null;
         }
+        $row = $rows[0];
 
         if (is_string($tokenExpiresField) && $tokenExpiresField !== '') {
             $expiresAt = $row[$tokenExpiresField] ?? null;
