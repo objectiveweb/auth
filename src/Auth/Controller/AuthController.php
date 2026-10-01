@@ -157,26 +157,32 @@ class AuthController
 
             foreach ($providers as $provider) {
                 $candidate = $this->auth->get_credential($provider, $form['uid']);
-                if (empty($candidate['user_id'])) {
-                    continue;
+                if ($credential === false && !empty($candidate['user_id'])) {
+                    $credential = $candidate;
                 }
-
-                $credential = $candidate;
-                break;
             }
 
             if (!empty($credential['user_id'])) {
-                // return new token
                 $credential['token'] = $this->auth->update_token($credential['user_id']);
 
                 if (is_callable($this->auth->params['token_callback'])) {
-                    return call_user_func($this->auth->params['token_callback'], $credential);
-                } else {
-                    return [];
+                    try {
+                        call_user_func($this->auth->params['token_callback'], $credential);
+                    } catch (\Throwable $exception) {
+                        error_log(
+                            'Password recovery delivery failed: '
+                            . $exception::class
+                            . ': '
+                            . $exception->getMessage()
+                        );
+                    }
                 }
-            } else {
-                throw new UserException('Credential not found', 404);
             }
+
+            // Anonymous recovery requests deliberately return the same payload
+            // whether or not a credential exists. This prevents account
+            // enumeration through status codes or callback return values.
+            return [];
         }
     }
 
