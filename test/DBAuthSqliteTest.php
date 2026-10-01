@@ -429,6 +429,16 @@ class DBAuthSqliteTest extends TestCase
         self::$auth->passwd_reset($token, 'new-secret');
     }
 
+    public function testGetByConfiguredUuidUsesUserTable(): void
+    {
+        $user = self::$auth->register('uuid-lookup@example.com', 'secret');
+
+        $loaded = self::$auth->get($user['uuid'], 'uuid');
+
+        $this->assertSame((int) $user['id'], (int) $loaded['id']);
+        $this->assertSame($user['uuid'], $loaded['uuid']);
+    }
+
     public function testPasswdResetUsesConfiguredDatabasePrefix(): void
     {
         $db = new DB('sqlite::memory:', null, '', ['prefix' => 'app_']);
