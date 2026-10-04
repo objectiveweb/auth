@@ -79,6 +79,42 @@ class UserControllerTest extends TestCase
         self::$db->query('DELETE FROM auth_user')->exec();
     }
 
+    public function testManagedRelationsAreRejectedByAuthAdminCreate(): void
+    {
+        $this->expectException(\Objectiveweb\Auth\UserException::class);
+        $this->expectExceptionCode(400);
+
+        self::$controller->post([
+            'uid' => 'venue-create@example.com',
+            'password' => 'test',
+            'managed_relations' => ['venues' => [1, 2]],
+        ]);
+    }
+
+    public function testManagedRelationsAreRejectedByAuthAdminUpdate(): void
+    {
+        $user = self::$controller->post([
+            'uid' => 'venue-update@example.com',
+            'password' => 'test',
+        ]);
+        $this->expectException(\Objectiveweb\Auth\UserException::class);
+        $this->expectExceptionCode(400);
+
+        self::$controller->put((int) $user['id'], [
+            'managed_relations' => ['venues' => [1, 2]],
+        ]);
+    }
+
+    public function testAdminUserDetailNoLongerOwnsApplicationAssociations(): void
+    {
+        $user = self::$controller->post([
+            'uid' => 'detail@example.com',
+            'password' => 'test',
+        ]);
+        $detail = self::$controller->get((int) $user['id']);
+        $this->assertArrayNotHasKey('managed_relations', $detail);
+    }
+
     public function testPost(): void
     {
         $user = self::$controller->post([
