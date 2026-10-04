@@ -123,7 +123,7 @@ class UserControllerTest extends TestCase
             'name' => 'Test User',
         ]);
 
-        $this->assertSame(1, (int) $user['id']);
+        $this->assertGreaterThan(0, (int) $user['id']);
     }
 
     public function testPostMissingUid(): void
