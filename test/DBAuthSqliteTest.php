@@ -113,13 +113,6 @@ class DBAuthSqliteTest extends TestCase
                     'ability_key' => 'ability',
                 ],
             ],
-            'managed_relations' => [
-                'items' => [
-                    'table' => 'managed_items',
-                    'subject_key' => 'user_id',
-                    'target_key' => 'item_id',
-                ],
-            ],
         ]);
     }
 
@@ -948,12 +941,11 @@ class DBAuthSqliteTest extends TestCase
         self::$auth->delete_credential($alice['id'], 'local', 'alice@example.com');
     }
 
-    public function testManagedRelationsSynchronizeAndDeletionCleansBothDelegationSides(): void
+    public function testUserDeletionCleansDelegationsButLeavesApplicationAssociationsToApplication(): void
     {
         $actor = self::$auth->register('actor@example.com', 'secret');
         $target = self::$auth->register('target@example.com', 'secret');
-        self::$auth->sync_managed_relations($actor['id'], ['items' => [8, 3, 8]]);
-        $this->assertEqualsCanonicalizing([3, 8], self::$auth->get_managed_relations($actor['id'])['items']);
+        self::$db->insert('managed_items', ['user_id' => $target['id'], 'item_id' => 3]);
 
         self::$db->insert('user_delegations', [
             'user_id' => $actor['id'],
@@ -962,6 +954,42 @@ class DBAuthSqliteTest extends TestCase
         ]);
         self::$auth->delete($target['id']);
         $this->assertSame(0, self::$db->count('user_delegations', []));
+        $this->assertSame(1, self::$db->count('managed_items', []));
+    }
+
+    public function testDbAuthSessionContextReloadsApplicationAssignments(): void
+    {
+        $auth = new DBAuth(self::$db, [
+            'table' => 'auth_user',
+            'credentials_table' => 'auth_credentials',
+            'created' => 'created',
+            'token' => 'token',
+            'roles_table' => 'auth_role',
+            'user_roles_table' => 'auth_user_role',
+            'user_context_callback' => function (array $user): array {
+                $rows = self::$db->select(
+                    'managed_items',
+                    ['user_id' => $user['id']],
+                    ['order' => 'item_id']
+                )->all();
+                return ['venues' => array_map(
+                    fn (array $row): int => (int) $row['item_id'],
+                    $rows
+                )];
+            },
+        ]);
+
+        $user = $auth->register('app-context@example.com', 'secret');
+        self::$db->insert('managed_items', ['user_id' => $user['id'], 'item_id' => 4]);
+        $login = $auth->login('app-context@example.com', 'secret');
+        $this->assertSame(['venues' => [4]], $login['context']);
+
+        self::$db->insert('managed_items', ['user_id' => $user['id'], 'item_id' => 9]);
+        $this->assertSame(['venues' => [4]], $auth->user()['context']);
+        $this->assertTrue($auth->revalidate());
+        $this->assertSame(['venues' => [4, 9]], $auth->user()['context']);
+        $controller = new AuthController($auth);
+        $this->assertSame(['venues' => [4, 9]], $controller->index()['context']);
     }
 
     public function testRoleNamesAndCredentialUidSearchAreNormalized(): void
