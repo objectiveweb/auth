@@ -471,6 +471,46 @@ class DBAuthSqliteTest extends TestCase
         $this->assertNull($stored['token_expires_at']);
     }
 
+    public function testDbAuthAuthenticatedPasswordChangeVerifiesCurrentPassword(): void
+    {
+        $user = self::$auth->register('db-password-change@example.com', 'old-secret');
+        self::$auth->login('db-password-change@example.com', 'old-secret');
+        $controller = new AuthController(self::$auth);
+
+        $originalHeader = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? null;
+        $_SERVER['HTTP_X_CSRF_TOKEN'] = $controller->index()['_csrf'];
+
+        try {
+            try {
+                $controller->postPassword([
+                    'current_password' => 'invalid',
+                    'password' => 'new-secret',
+                    'confirm' => 'new-secret',
+                ]);
+                $this->fail('Incorrect current password was accepted');
+            } catch (AuthException $exception) {
+                $this->assertSame(403, $exception->getCode());
+            }
+
+            $this->assertTrue(password_verify('old-secret', self::$auth->get($user['id'])['password']));
+            $this->assertTrue($controller->postPassword([
+                'current_password' => 'old-secret',
+                'password' => 'new-secret',
+                'confirm' => 'new-secret',
+            ]));
+            $this->assertTrue(password_verify('new-secret', self::$auth->get($user['id'])['password']));
+
+            self::$auth->logout();
+            $this->assertSame($user['id'], self::$auth->login('db-password-change@example.com', 'new-secret')['id']);
+        } finally {
+            if ($originalHeader === null) {
+                unset($_SERVER['HTTP_X_CSRF_TOKEN']);
+            } else {
+                $_SERVER['HTTP_X_CSRF_TOKEN'] = $originalHeader;
+            }
+        }
+    }
+
     public function testAuthControllerResponsesDoNotExposeUserSecrets(): void
     {
         $controller = new AuthController(self::$auth);
