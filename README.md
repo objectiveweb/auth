@@ -24,141 +24,243 @@ This package requires:
 
 #### Example setup
 
-```php
-use Objectiveweb\Auth\DBAuth;
-use Objectiveweb\DB;
+Apply the bundled Phinx migrations (or an equivalent schema) before using `DBAuth`. The example uses the default **logical** table names created by those migrations: `user`, `user_credentials`, `role`, `user_roles` and `delegations`.
 
-$db = new DB('sqlite:/tmp/app.sqlite'); // or mysql:..., pgsql:...
+```php
+use Objectiveweb\DB;
+use Objectiveweb\Auth\DBAuth;
+
+$db = new DB('sqlite:/tmp/app.sqlite'); // MySQL and PostgreSQL also supported
 
 $auth = new DBAuth($db, [
-    'table' => 'auth_user',
-    'credentials_table' => 'auth_credentials',
-    'id' => 'id',
-    'password' => 'password',
-    'roles' => 'roles',
-    'login_providers' => ['local', 'email', 'phone'],
-    'token' => 'token',
-    'token_expires_field' => 'token_expires_at',
-    'disabled_at' => 'disabled_at',
-    'created' => 'created',
-    'uuid' => 'uuid',
-    'credentials_last_login' => 'last_login',
-    'roles_table' => 'auth_role',
-    'user_roles_table' => 'auth_user_role',
-    'relations' => [
-        'user' => [
-            'table' => 'user_delegations',
-            'subject_key' => 'user_id',
-            'target_key' => 'target_user_id',
-            'ability_key' => 'ability',
-            'target_is_user' => true, // clean both sides on user deletion
-        ],
-        'item' => [
-            'table' => 'item_users',
-            'subject_key' => 'user_id',
-            'target_key' => 'item_id',
-            'ability_key' => 'ability',
-            'eager' => true // or array of parameters passed to select 
-                            // ['order' => 'item_id DESC', 'fields' => ['a', 'b']]
-
-        ],
-    ],
-    'managed_relations' => [
-        'venues' => [
-            'table' => 'venue_users',
-            'subject_key' => 'user_id',
-            'target_key' => 'venue_id',
-            'validate_callback' => fn (array $ids) => validateVenueIds($ids),
-        ],
-    ],
-    'invitation_callback' => function (array $user, array $credentials, string $plainToken): void {
-        // Deliver an application-owned email. Never return the token over HTTP.
+    'token' => 'token',             // Enable password resets
+    'disabled_at' => 'disabled_at', // Enable account suspension
+    'invitation_callback' => function (array $user, array $credentials, string $token): void {
+        // Deliver invitations out of band; never return a token over HTTP.
     },
-    'reset_callback' => function (array $user, array $credentials, string $plainToken): void {},
-    'audit_callback' => function ($actorId, $targetId, string $action, array $metadata): void {},
-    'deletion_guard_callback' => fn ($userId): bool|string => true,
+    'reset_callback' => function (array $user, array $credentials, string $token): void {
+        // Deliver admin-initiated resets out of band.
+    },
+    'token_callback' => function (array $credential): void {
+        // Anonymous forgot-password delivery; token is in $credential['token'].
+    },
 ]);
 ```
 
-#### Required tables
+The table names are defaults; they do **not** need to be repeated in the constructor. `DBAuth` initializes a `$db->table('user')` object for user CRUD and pagination.
 
-`DBAuth` expects the configured users and credentials tables. With the default
-role configuration it also expects the roles and user-role mapping tables. Set
-both `roles_table` and `user_roles_table` to `null` to disable database-backed
-roles.
+To use physical table prefixes, configure `DB` and your Phinx installation consistently, leaving `DBAuth` table names logical:
 
-The bundled Phinx migrations use the default logical table names (`user`,
-`user_credentials`, `role`, and `user_roles`). Applications may apply their
-normal Phinx table prefix instead of hardcoding prefixed names in Auth.
-
-Example schema for the custom `auth_*` configuration above (SQLite-compatible):
-
-```sql
-CREATE TABLE auth_user (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    uuid TEXT NOT NULL UNIQUE,
-    name TEXT,
-    image TEXT,
-    created TEXT,
-    password TEXT,
-    token TEXT,
-    token_expires_at TEXT,
-    disabled_at TEXT
-);
-
-CREATE TABLE auth_credentials (
-    uid TEXT NOT NULL,
-    provider TEXT NOT NULL,
-    user_id INTEGER NOT NULL,
-    profile TEXT NULL,
-    last_login TEXT NULL,
-    created TEXT NULL,
-    PRIMARY KEY(uid, provider)
-);
-
-CREATE TABLE auth_role (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE
-);
-
-CREATE TABLE auth_user_role (
-    user_id INTEGER NOT NULL,
-    role_id INTEGER NOT NULL,
-    PRIMARY KEY(user_id, role_id)
-);
+```php
+$db = new DB('sqlite:/tmp/app.sqlite', null, '', ['prefix' => 'app_']);
+$auth = new DBAuth($db, ['token' => 'token', 'disabled_at' => 'disabled_at']);
+// Logical table "user" resolves to physical table "app_user".
 ```
 
-#### DBAuth params
+#### DBAuth parameters
 
-- `session_key`: session storage key (default `ow_auth`)
-- `id`: user PK field (default `id`)
-- `password`: password field (default `password`)
-- `roles`: roles field attached to the user payload (default `roles`)
-- `login_providers`: ordered providers used by `login()` (default `['local', 'email']`)
-- `token`: optional password-reset token field
-- `table`: users table name (default `user`)
-- `credentials_table`: credentials table name (default `user_credentials`)
-- `roles_table`: roles table name (default `role`; set together with `user_roles_table` to `null` to disable roles)
-- `user_roles_table`: user-role mapping table name (default `user_roles`; set together with `roles_table` to `null` to disable roles)
-- `user_roles_user_id`: user FK column in mapping table (default `user_id`)
-- `user_roles_role_id`: role FK column in mapping table (default `role_id`)
-- `role_id`: role PK column in `roles_table` (default `id`)
-- `role_name`: role name column in `roles_table` (default `name`)
-- `relations`: relationship auth mapping by resource type (default `[]`)
-- `managed_relations`: application-owned many-to-many associations that admins may synchronize
-- `disabled_at`: nullable lifecycle field; non-null users cannot log in and active sessions are rejected on their next protected request
-- `invitation_callback`, `reset_callback`: application delivery callbacks receiving the user, credentials, and one-time plaintext token
-- `audit_callback`: application persistence callback for management events
-- `deletion_guard_callback`: return `true` to allow deletion, or a conflict message/`false` to reject it
-- `management_csrf`: require JSON management writes with `X-CSRF-Token` (default `true`)
-- `relations.<name>.eager`: eager load related rows into user payload (`true` => `[]`, `array` => select params)
-- `created`: optional created-at field
-- `last_login`: optional user last-login field
-- `credentials_last_login`: optional credentials last-login field (default `last_login`)
-- `credentials_created`: optional credentials created-at field (default `created`)
-- `token_expires_field`: password-reset token expiry field (default `token_expires_at`)
-- `token_ttl`: reset-token lifetime in seconds (default `3600`)
-- `uuid`: UUID field created on register and protected from updates (default `uuid`)
+These options come from both the shared `Auth` contract and `DBAuth`. Set only the options your application needs.
+
+| Parameter | Default | Purpose |
+| --- | --- | --- |
+| `table` | `user` | Logical user table (DB applies any configured prefix) |
+| `id` / `password` | `id` / `password` | User primary key and password-hash columns |
+| `uuid` | `uuid` | Generates UUIDs on registration; `null` disables |
+| `created` / `last_login` | `created` / `null` | User-table creation and optional last-login columns |
+| `credentials_table` | `user_credentials` | Logical provider-credential table |
+| `credentials_last_login` / `credentials_created` | `last_login` / `created` | Credential timestamp columns; `null` disables updates |
+| `login_providers` | `['local', 'email']` | Ordered provider identities considered for password login |
+| `recovery_providers` | `['local', 'email', 'phone']` | Provider identities checked for anonymous recovery |
+| `token` | `null` | User-table reset-token field; use `'token'` to enable |
+| `token_expires_field` / `token_ttl` | `token_expires_at` / `3600` | Reset-token expiry column and lifetime in seconds |
+| `disabled_at` | `null` | Nullable suspension column; use `'disabled_at'` to enable lifecycle checks |
+| `roles` | `roles` | Name of the calculated user roles array (not a database column) |
+| `roles_table` / `user_roles_table` | `role` / `user_roles` | Global roles and memberships; both required or both `null` |
+| `role_id` / `role_name` | `id` / `name` | Role table's ID/name fields |
+| `user_roles_user_id` / `user_roles_role_id` | `user_id` / `role_id` | Membership foreign-key fields |
+| `relations` / `managed_relations` | `[]` / `[]` | Resource abilities/delegations and admin-managed memberships; see Relations |
+| `session_key` | `ow_auth` | Authenticated principal's session key |
+| `register_scope` / `register_allow_grants` | `Auth::ANONYMOUS` / `false` | Registration access and whether callers may supply roles |
+| `management_csrf` / `management_csrf_session_key` | `true` / `ow_auth_management_csrf` | Management write protection and CSRF session key |
+| `register_callback` / `token_callback` | `null` / `null` | Registration callback / anonymous recovery delivery callback |
+| `invitation_callback` / `reset_callback` | `null` / `null` | Delivery callbacks for invitation/admin reset: `(user, credentials, plaintextToken)` |
+| `audit_callback` | `null` | Management events: `(actorId, targetId, action, metadata)` |
+| `deletion_guard_callback` | `null` | Return `false` or a conflict string to reject user deletion |
+
+The anonymous `token_callback` receives a **single** credential array containing the one-time token. `Auth::invite()` instead invokes `invitation_callback` or `reset_callback` with **three** arguments; without dedicated callbacks it falls back to `register_callback`/`token_callback`, respectively. Prefer dedicated callbacks when supporting both flows.
+
+#### Database tables and migrations
+
+The bundled migrations in `db/` use the following **default logical names**:
+
+| Table | Fields and purpose |
+| --- | --- |
+| `user` | `id`, unique `uuid`, nullable `password`, `name`, `image`, `created`, nullable `token`, `token_expires_at` and `disabled_at` |
+| `user_credentials` | Unique (`uid`, `provider`) credential identity, `user_id` FK, `profile`, `token`, `last_login`, `created` |
+| `role` | `id` and unique role `name` |
+| `user_roles` | (`user_id`, `role_id`) memberships with both foreign keys |
+| `delegations` | Optional (`user_id`, `target_user_id`, `ability`) relation table |
+
+Use your application's Phinx configuration to run the package's migrations; Phinx is a development/migration dependency, not a runtime dependency of this package. The reset-token column is indexed in the bundled user migration and stores only a SHA-256 digest of the generated one-time token.
+
+**Custom schemas:** Override `table`, `credentials_table`, `roles_table` and `user_roles_table` when integrating existing tables. For instance, the following maps to *logical* custom tables; these physical tables must already exist because the bundled migrations use the default names:
+
+```php
+$auth = new DBAuth($db, [
+    'table' => 'auth_user',
+    'credentials_table' => 'auth_credentials',
+    'roles_table' => 'auth_role',
+    'user_roles_table' => 'auth_user_role',
+    'token' => 'token',
+    'disabled_at' => 'disabled_at',
+]);
+```
+
+Configure a prefix only on `DB` rather than manually including it in these table names. With the default configuration, **both** role tables are expected. To disable database roles, set **both** `roles_table` and `user_roles_table` to `null`; no role columns belong in the user table.
+
+#### Users
+
+`register()` creates the user and its initial credential transactionally. It returns a **sanitized** user. `get()` returns the provider's **raw** user record, including sensitive fields; sanitize it before exposing it to clients.
+
+```php
+$user = $auth->register('alice@example.com', 'secret', ['name' => 'Alice']);
+$userId = $user['id'];
+
+$rawUser = $auth->get($userId);
+$publicUser = $auth->sanitize_user($rawUser);
+
+$auth->update($userId, ['name' => 'Alice Smith']);
+```
+
+`query()` returns `Objectiveweb\DB\Collection`, not HAL-formatted data:
+
+```php
+$users = $auth->query([
+    'q' => 'alice',      // Search name, numeric ID or credential UID
+    'page' => 0,
+    'size' => 20,
+    'sort' => 'name ASC',
+    'status' => 'active',
+]);
+
+foreach ($users as $user) {
+    // Sanitized user, with roles and credentials
+}
+$total = $users->total();
+$range = $users->contentRange(); // e.g. "items 0-19/137"
+```
+
+For password-based login and session management:
+
+```php
+use Objectiveweb\Auth\AuthException;
+use Objectiveweb\Auth\UserException;
+
+try {
+    $current = $auth->login('alice@example.com', 'secret');
+} catch (UserException $e) {
+    // Unknown login identity
+} catch (AuthException $e) {
+    // Bad password or suspended account
+}
+
+if ($auth->check()) {
+    $current = $auth->user(); // Sanitized session principal
+}
+$auth->logout();
+```
+
+`passwd($userId, $newPassword)` performs a **direct** password replacement and must only be called by trusted admin/service code. For an authenticated user's own change, the included `AuthController::postPassword()` verifies the old password and session CSRF token; see below.
+
+#### User credentials
+
+A user can have multiple identities, each uniquely identified by `(provider, uid)` and linked through `user_id`. The default `login_providers` are `local` and `email`; adding an OAuth/phone/email credential does not verify ownership automatically.
+
+```php
+$auth->get_credential('local', 'alice@example.com'); // Raw provider credential or false
+$credentials = $auth->get_credentials($userId); // Normalized public-safe list
+
+$auth->create_credential($userId, 'phone', '+5511999999999', ['country' => 'BR']);
+$auth->rename_credential($userId, 'phone', '+5511999999999', 'phone', '+5511888888888');
+$auth->delete_credential($userId, 'phone', '+5511888888888');
+```
+
+`create_credential()` rejects duplicates; `update_credential()` inserts or updates a provider identity and updates its last-login field when configured. `delete_credential()` refuses to remove the user's last credential. Treat raw provider profiles as potentially sensitive; send normalized/sanitized credentials to clients.
+
+#### Roles
+
+**Global roles** are attached to users and stored in `role` and `user_roles`. `roles` in returned user data is a computed array, not a SQL column. They are independent of resource-specific relations.
+
+```php
+// Trusted bootstrap/service code:
+$admin = $auth->register('admin@example.com', 'secret', [
+    'name' => 'Admin',
+    'roles' => ['admin'],
+]);
+
+$auth->get_roles();                // ['admin', ...]
+$auth->get_users_by_role('admin'); // Sanitized user arrays
+$auth->update($admin['id'], ['roles' => ['admin', 'editor']]);
+
+// With the appropriate user already logged in:
+$auth->user_can('admin'); // bool
+```
+
+Direct `DBAuth::register()` / `update()` can create role definitions when syncing names that do not exist. The **admin UserController API** is intentionally stricter and accepts only *existing* role names: seed the allowed roles before using its role-management endpoints. Keep `register_allow_grants` disabled for public registration. Both `roles_table` and `user_roles_table` must be disabled together if roles are not wanted.
+
+#### Relations and authorization
+
+`relations` provides **resource permissions and user-to-user delegations**, separate from global roles. The bundled `delegations` table is optional until you map it; any other permission tables are owned by your application and must be created in your migrations.
+
+```php
+$auth = new DBAuth($db, [
+    'relations' => [
+        'user' => [
+            'table' => 'delegations', // Bundled table
+            'subject_key' => 'user_id',
+            'target_key' => 'target_user_id',
+            'ability_key' => 'ability',
+            'target_is_user' => true, // Also clean target-user rows on deletion
+        ],
+        'item' => [
+            'table' => 'item_users',  // Application-owned relation table
+            'subject_key' => 'user_id',
+            'target_key' => 'item_id',
+            'ability_key' => 'ability',
+            'eager' => true,         // Eagerly load matching rows with get()/query()
+        ],
+    ],
+]);
+
+// With a user logged in:
+$auth->user_can('delegate', 42);       // "user" relation for target user 42
+$auth->user_can('manage', 'item', 10);  // Ability on item 10
+$itemIds = $auth->user_can('manage', 'item'); // Accessible item IDs
+```
+
+Each permission relation requires `table`, `subject_key`, `target_key` and either `ability_key` or `role_key` together with `role_abilities` (a role-to-ability map). `eager` may be `true` or a `DB::select()` options array such as `['order' => 'item_id DESC']`. Eager relation rows remain scoped to the current subject user.
+
+`managed_relations` is different: these are **application-owned many-to-many associations** that admins can synchronize, not grants interpreted by `user_can()` unless separately mapped as a permission relation.
+
+```php
+$auth = new DBAuth($db, [
+    'managed_relations' => [
+        'venues' => [
+            'table' => 'venue_users', // Application-owned
+            'subject_key' => 'user_id',
+            'target_key' => 'venue_id',
+            'validate_callback' => function (array $ids): void {
+                // Validate IDs; throw if any requested association is invalid.
+            },
+        ],
+    ],
+]);
+
+$auth->sync_managed_relations($userId, ['venues' => [12, 34]]);
+$assigned = $auth->get_managed_relations($userId); // ['venues' => [12, 34]]
+```
+
+`sync_managed_relations()` validates the incoming values, then replaces the selected memberships transactionally. When enabling relations, configure them in the **same** DBAuth constructor as the basic settings; the isolated constructors above illustrate the relevant parameters, not multiple concurrent auth instances.
 
 ### `BasicAuth`
 
@@ -187,33 +289,6 @@ $auth = new BasicAuth(
 ```
 
 Passwords passed to the constructor/register are hashed internally unless already hashed.
-
-## Common usage
-
-```php
-use Objectiveweb\Auth\AuthException;
-use Objectiveweb\Auth\UserException;
-
-// Register
-$user = $auth->register('alice@example.com', 'secret', ['name' => 'Alice']);
-
-// Login
-try {
-    $user = $auth->login('alice@example.com', 'secret');
-} catch (AuthException $e) {
-    // invalid password
-} catch (UserException $e) {
-    // user not found
-}
-
-// Session
-if ($auth->check()) {
-    $current = $auth->user();
-}
-
-// Logout
-$auth->logout();
-```
 
 ## Authenticated password changes
 
@@ -251,39 +326,6 @@ $auth->passwd_reset($token, 'new-password');
 `DBAuth` stores only a SHA-256 digest of the high-entropy reset token and looks it up through the indexed token column. The plaintext token is returned only once for delivery.
 
 Anonymous password-recovery requests intentionally return the same empty success payload whether or not the supplied UID exists. Recovery callbacks are delivery-only: their return value is not exposed, and delivery failures do not change the anonymous response. Applications should still rate-limit recovery requests at the HTTP/application edge.
-
-## Credential strategy (`local`, `email`, `phone`, social)
-
-Recommended model:
-- `local`: password-based login identity
-- `email`: email identities for verification/login/magic-link
-- `phone`: phone identities for SMS verification/login
-- `google`, `facebook`, ...: external OAuth providers
-
-Store each identity in `credentials_table` as `(provider, uid)`, linked to one `user_id`.
-
-## Query and update
-
-```php
-// List users. query() returns Objectiveweb\DB\Collection.
-$users = $auth->query(['page' => 0, 'size' => 20]);
-
-foreach ($users as $user) {
-    // ...
-}
-
-$total = $users->total();
-$contentRange = $users->contentRange(); // e.g. "items 0-19/137"
-
-// Update user profile data
-$auth->update($userId, ['name' => 'Alice Updated']);
-
-// Update password
-$auth->passwd($userId, 'new-password');
-
-// List all credentials for a user
-$credentials = $auth->get_credentials($userId);
-```
 
 ## OAuth controller
 
@@ -325,22 +367,6 @@ callbacks and are never serialized in HTTP responses.
 
 Role names accepted by the management API must already exist in the configured
 roles table. Use migrations/seeds for role definitions.
-
-## Authorization checks (`user_can`)
-
-```php
-// Global grants (roles)
-$auth->user_can('admin'); // bool
-
-// Delegation to a target user (relation type "user")
-$auth->user_can('delegate', 42); // bool
-
-// Permission for a single resource
-$auth->user_can('manage', 'item', 10); // bool
-
-// List resource IDs accessible for an ability
-$auth->user_can('manage', 'item'); // int[]
-```
 
 ## Controllers and middleware
 
