@@ -170,39 +170,63 @@ class BasicAuthTest extends TestCase
         $this->assertNotFalse($auth->get_credential('local', 'guarded@example.com'));
     }
 
-    public function testManagedRelationValidationRunsBeforeMutation(): void
+    public function testSessionContextIsLoadedAndRefreshedFromApplication(): void
     {
-        $validated = null;
+        $assignments = [1 => [5, 8]];
+        $calls = 0;
         $auth = new BasicAuth([], [
-            'token' => 'token',
-            'managed_relations' => [
-                'items' => [
-                    'validate_callback' => function (array $values) use (&$validated): void {
-                        $validated = $values;
-                        if (in_array(99, $values, true)) {
-                            throw new UserException('Invalid item', 400);
-                        }
-                    },
-                ],
-            ],
+            'user_context_callback' => function (array $user) use (&$assignments, &$calls): array {
+                $calls++;
+                $this->assertArrayNotHasKey('password', $user);
+                return ['venues' => $assignments[$user['id']] ?? []];
+            },
         ]);
+        $auth->register('context@example.com', 'secret');
+        $session = $auth->login('context@example.com', 'secret');
+        $this->assertSame(['venues' => [5, 8]], $session['context']);
+        $this->assertSame(1, $calls);
 
-        $user = $auth->register('relations@example.com', 'secret');
-        $relations = $auth->sync_managed_relations($user['id'], [
-            'items' => [3, 3, 8],
+        $assignments[1] = [8, 13];
+        $this->assertSame(['venues' => [5, 8]], $auth->user()['context']);
+        $this->assertTrue($auth->revalidate());
+        $this->assertSame(['venues' => [8, 13]], $auth->user()['context']);
+        $this->assertSame(2, $calls);
+
+        $auth->logout();
+        $this->assertFalse($auth->check());
+    }
+
+    public function testContextCallbackReplacesUntrustedSessionContext(): void
+    {
+        $auth = new BasicAuth([], [
+            'user_context_callback' => function (array $user): array {
+                $this->assertArrayNotHasKey('context', $user);
+                return ['venues' => [7]];
+            },
         ]);
+        $user = $auth->register('trusted@example.com', 'secret');
+        $principal = $auth->get($user['id']);
+        $principal['context'] = ['venues' => [999]];
 
-        $this->assertSame([3, 8], $validated);
-        $this->assertSame([3, 8], $relations['items']);
+        $session = $auth->establish_session($principal);
+        $this->assertSame(['venues' => [7]], $session['context']);
+    }
+
+    public function testContextCallbackMustReturnArrayWithoutMutatingSession(): void
+    {
+        $auth = new BasicAuth([], [
+            'user_context_callback' => fn (array $user): string => 'invalid',
+        ]);
+        $auth->register('invalid-context@example.com', 'secret');
 
         try {
-            $auth->sync_managed_relations($user['id'], ['items' => [99]]);
-            $this->fail('Expected managed relation validation to reject the update');
-        } catch (UserException $exception) {
-            $this->assertSame(400, $exception->getCode());
+            $auth->login('invalid-context@example.com', 'secret');
+            $this->fail('Expected callback return type validation');
+        } catch (\UnexpectedValueException $exception) {
+            $this->assertSame('user_context_callback must return an array', $exception->getMessage());
         }
 
-        $this->assertSame([3, 8], $auth->get_managed_relations($user['id'])['items']);
+        $this->assertFalse($auth->check());
     }
 
     public function testQueryReturnsCollectionWithPaginationMetadata(): void
