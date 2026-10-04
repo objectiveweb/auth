@@ -35,7 +35,7 @@ abstract class Auth
             'audit_callback' => null,
             'deletion_guard_callback' => null,
             'disabled_at' => null,
-            'managed_relations' => [],
+            'user_context_callback' => null,
             'management_csrf' => true,
             'management_csrf_session_key' => 'ow_auth_management_csrf',
         ];
@@ -329,7 +329,19 @@ abstract class Auth
     public function &user($user = null)
     {
         if ($user) {
-            $_SESSION[$this->params['session_key']] = $this->sanitize_user($user);
+            $user = $this->sanitize_user($user);
+            $callback = $this->params['user_context_callback'];
+            if (is_callable($callback)) {
+                // Context is derived by the application, never trusted from
+                // user-supplied fields or an earlier session snapshot.
+                unset($user['context']);
+                $context = call_user_func($callback, $user);
+                if (!is_array($context)) {
+                    throw new \UnexpectedValueException('user_context_callback must return an array');
+                }
+                $user['context'] = $context;
+            }
+            $_SESSION[$this->params['session_key']] = $user;
         } else {
             if (!$this->check()) {
                 throw new Auth\UserException('Not logged in', 403);
@@ -482,7 +494,4 @@ abstract class Auth
 
     abstract public function delete_credential($userid, string $provider, string $uid): bool;
 
-    abstract public function get_managed_relations($userId): array;
-
-    abstract public function sync_managed_relations($userId, array $relations): array;
 }
