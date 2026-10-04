@@ -123,6 +123,27 @@ abstract class Auth
         return true;
     }
 
+    /**
+     * Verify an authenticated user's existing password using this provider's
+     * raw user record. Providers with a different password backend may override
+     * this method.
+     *
+     * Passwordless / OAuth-only accounts must use a verified reset or
+     * reauthentication flow; an active session alone cannot set a password.
+     */
+    public function verify_password(mixed $userId, string $password): bool
+    {
+        $user = $this->get($userId);
+        $field = (string) $this->params['password'];
+        $hash = $user[$field] ?? null;
+
+        if (!is_string($hash) || $hash === '' || password_get_info($hash)['algoName'] === 'unknown') {
+            throw new Auth\AuthException('Password reset or reauthentication required', 403);
+        }
+
+        return password_verify($password, $hash);
+    }
+
     public function management_csrf_token(): string
     {
         $key = (string) $this->params['management_csrf_session_key'];
