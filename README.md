@@ -215,6 +215,27 @@ if ($auth->check()) {
 $auth->logout();
 ```
 
+## Authenticated password changes
+
+`AuthController::postPassword()` requires proof of the existing password for
+authenticated sessions. Retrieve the session-bound CSRF token from the
+authenticated `AuthController::index()` response (`_csrf`) and send it as
+`X-CSRF-Token` with `Content-Type: application/json`:
+
+```http
+POST /auth/password
+Content-Type: application/json
+X-CSRF-Token: <token from authenticated current-user response>
+
+{"current_password":"old-password","password":"new-password","confirm":"new-password"}
+```
+
+The authenticated change is refused when the current password is missing or
+incorrect, or when the user has no usable local password (for example, an
+OAuth-only account). Passwordless users must complete an independently verified
+password-reset or reauthentication flow instead; a session alone cannot set a
+password. The CSRF token is required even for direct controller invocations.
+
 ## Password reset flow
 
 When `token` is configured:
