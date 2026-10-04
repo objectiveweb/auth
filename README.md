@@ -103,6 +103,58 @@ The bundled migrations in `db/` use the following **default logical names**:
 
 Use your application's Phinx configuration to run the package's migrations; Phinx is a development/migration dependency, not a runtime dependency of this package. The reset-token column is indexed in the bundled user migration and stores only a SHA-256 digest of the generated one-time token.
 
+
+For a standalone SQLite setup, the following is an equivalent schema using **default table names**. Prefer the bundled migrations for a production application and adapt column types/constraints to your database:
+
+```sql
+CREATE TABLE user (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    uuid VARCHAR(36) NOT NULL UNIQUE,
+    password VARCHAR(60),
+    name VARCHAR(255),
+    image VARCHAR(255),
+    token VARCHAR(255),
+    token_expires_at DATETIME,
+    disabled_at DATETIME,
+    created DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX user_token_idx ON user(token);
+
+CREATE TABLE user_credentials (
+    uid VARCHAR(255) NOT NULL,
+    provider VARCHAR(32) NOT NULL,
+    user_id INTEGER NOT NULL,
+    profile TEXT,
+    token VARCHAR(255),
+    last_login DATETIME,
+    created DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (uid, provider),
+    FOREIGN KEY (user_id) REFERENCES user(id)
+);
+
+CREATE TABLE role (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name VARCHAR(255) NOT NULL UNIQUE
+);
+CREATE TABLE user_roles (
+    user_id INTEGER NOT NULL,
+    role_id INTEGER NOT NULL,
+    PRIMARY KEY (user_id, role_id),
+    FOREIGN KEY (user_id) REFERENCES user(id),
+    FOREIGN KEY (role_id) REFERENCES role(id)
+);
+CREATE INDEX user_roles_role_id_idx ON user_roles(role_id);
+
+-- Optional, used only when explicitly configured under "relations":
+CREATE TABLE delegations (
+    user_id INTEGER NOT NULL,
+    target_user_id INTEGER NOT NULL,
+    ability VARCHAR(64) NOT NULL,
+    PRIMARY KEY (user_id, target_user_id, ability)
+);
+CREATE INDEX delegations_target_idx ON delegations(target_user_id);
+```
+
 **Custom schemas:** Override `table`, `credentials_table`, `roles_table` and `user_roles_table` when integrating existing tables. For instance, the following maps to *logical* custom tables; these physical tables must already exist because the bundled migrations use the default names:
 
 ```php
