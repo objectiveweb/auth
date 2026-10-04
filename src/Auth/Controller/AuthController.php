@@ -43,14 +43,42 @@ class AuthController
             throw new AuthException('Forbidden', 401);
         }
 
+        $redirect = null;
+        if (array_key_exists('redirect', $params) && $params['redirect'] !== null && $params['redirect'] !== '') {
+            $redirect = $this->normalizeLogoutRedirect($params['redirect']);
+        }
+
         $this->auth->logout();
 
-        if (!empty($params['redirect'])) {
-            header("Location: {$params['redirect']}");
+        if ($redirect !== null) {
+            header('Location: ' . $redirect);
             exit;
         }
 
         return [];
+    }
+
+    /**
+     * Logout redirects are intentionally limited to same-origin absolute paths.
+     * Scheme-relative URLs, backslashes and header control characters are
+     * rejected instead of being normalized by a browser into another origin.
+     */
+    protected function normalizeLogoutRedirect(mixed $redirect): string
+    {
+        if (!is_string($redirect) || $redirect === '') {
+            throw new UserException('Invalid redirect', 400);
+        }
+
+        if (
+            $redirect[0] !== '/'
+            || str_starts_with($redirect, '//')
+            || str_contains($redirect, '\\')
+            || preg_match('/[\\x00-\\x1F\\x7F]/', $redirect)
+        ) {
+            throw new UserException('Invalid redirect', 400);
+        }
+
+        return $redirect;
     }
 
     /**
