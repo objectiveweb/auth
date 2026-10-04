@@ -30,6 +30,59 @@ class AuthControllerTest extends TestCase
         $_SESSION = [];
     }
 
+    public function testLogoutWithoutRedirectEndsSession(): void
+    {
+        $this->auth->register('logout@example.com', 'secret');
+        $this->auth->login('logout@example.com', 'secret');
+
+        $this->assertSame([], $this->controller->getLogout());
+        $this->assertFalse($this->auth->check());
+    }
+
+    public function testLogoutRejectsUnsafeRedirectsBeforeEndingSession(): void
+    {
+        $this->auth->register('logout@example.com', 'secret');
+        $this->auth->login('logout@example.com', 'secret');
+
+        $invalid = [
+            'https://evil.example/',
+            'http://evil.example/',
+            '//evil.example/',
+            '\\evil.example\\path',
+            '/\\evil.example/path',
+            'javascript:alert(1)',
+            'account',
+            "/safe\r\nLocation: https://evil.example/",
+        ];
+
+        foreach ($invalid as $redirect) {
+            try {
+                $this->controller->getLogout(['redirect' => $redirect]);
+                $this->fail("Unsafe redirect was accepted: {$redirect}");
+            } catch (UserException $exception) {
+                $this->assertSame(400, $exception->getCode());
+                $this->assertSame('Invalid redirect', $exception->getMessage());
+                $this->assertTrue($this->auth->check());
+            }
+        }
+    }
+
+    public function testLogoutRedirectValidatorAcceptsSameOriginPaths(): void
+    {
+        $controller = new class($this->auth) extends AuthController {
+            public function validateRedirect(mixed $redirect): string
+            {
+                return $this->normalizeLogoutRedirect($redirect);
+            }
+        };
+
+        $this->assertSame('/', $controller->validateRedirect('/'));
+        $this->assertSame(
+            '/account/logout?done=1#top',
+            $controller->validateRedirect('/account/logout?done=1#top')
+        );
+    }
+
     public function testPostMissingUid(): void
     {
         $this->expectException(UserException::class);
