@@ -37,6 +37,9 @@ class UserControllerTest extends TestCase
                 provider TEXT NOT NULL,
                 user_id INTEGER NOT NULL,
                 profile TEXT NULL,
+                token TEXT NULL,
+                token_expires_at TEXT NULL,
+                verified_at TEXT NULL,
                 last_login TEXT NULL,
                 PRIMARY KEY(uid, provider)
             )'
