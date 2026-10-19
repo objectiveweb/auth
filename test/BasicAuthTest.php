@@ -101,6 +101,53 @@ class BasicAuthTest extends TestCase
         }
     }
 
+    public function testCredentialVerificationIsScopedSingleUseAndHashed(): void
+    {
+        $user = $this->auth->register('token-user@example.com', 'secret');
+        $this->auth->create_credential($user['id'], 'email', 'token-user@example.com');
+        $this->auth->create_credential($user['id'], 'phone', '+5511999999999');
+
+        $emailToken = $this->auth->issue_credential_token($user['id'], 'email', 'token-user@example.com');
+        $phoneToken = $this->auth->issue_credential_token($user['id'], 'phone', '+5511999999999');
+
+        $credential = $this->auth->get_credential('email', 'token-user@example.com');
+        $this->assertSame(hash('sha256', $emailToken), $credential['token']);
+        $this->assertNotSame($emailToken, $credential['token']);
+        $this->assertNotEmpty($credential['token_expires_at']);
+        $this->assertFalse($this->auth->verify_credential_token('phone', '+5511999999999', $emailToken));
+        $this->assertFalse($this->auth->verify_credential_token('email', 'token-user@example.com', $phoneToken));
+        $this->assertFalse($this->auth->verify_credential_token('email', 'token-user@example.com', 'bad-token'));
+
+        $public = $this->auth->get_credentials($user['id']);
+        foreach ($public as $item) {
+            $this->assertArrayNotHasKey('token', $item);
+            $this->assertArrayNotHasKey('token_expires_at', $item);
+        }
+
+        $this->assertTrue($this->auth->verify_credential_token('email', 'token-user@example.com', $emailToken));
+        $this->assertFalse($this->auth->verify_credential_token('email', 'token-user@example.com', $emailToken));
+        $this->assertNotEmpty($this->auth->get_credential('email', 'token-user@example.com')['verified_at']);
+        $this->assertNull($this->auth->get_credential('phone', '+5511999999999')['verified_at'] ?? null);
+        $this->assertTrue($this->auth->verify_credential_token('phone', '+5511999999999', $phoneToken));
+
+        // Metadata refresh keeps verification, but a changed UID requires proof again.
+        $this->auth->update_credential($user['id'], 'email', 'token-user@example.com', ['source' => 'profile']);
+        $this->assertNotEmpty($this->auth->get_credential('email', 'token-user@example.com')['verified_at']);
+        $renamed = $this->auth->rename_credential(
+            $user['id'], 'email', 'token-user@example.com', 'email', 'renamed@example.com'
+        );
+        $this->assertNull($renamed['verified_at']);
+    }
+
+    public function testExternalOAuthCredentialCannotBeVerifiedWithContactToken(): void
+    {
+        $this->auth->create_credential(1, 'google', 'google-id');
+        $this->assertFalse($this->auth->verify_credential_token('google', 'google-id', 'anything'));
+        $this->expectException(UserException::class);
+        $this->expectExceptionCode(400);
+        $this->auth->issue_credential_token(1, 'google', 'google-id');
+    }
+
     public function testRenameCredentialNormalizesTargetAndPreservesMetadata(): void
     {
         $user = $this->auth->register('rename@example.com', 'secret');
