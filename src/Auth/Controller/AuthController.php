@@ -122,10 +122,16 @@ class AuthController
             throw new AuthException('Email inválido');
         }
 
-        if (!$this->auth->params['register_allow_grants']) {
-            unset($user[$this->auth->params['roles']]);
+        // Public registration cannot claim external identities or privileged
+        // account attributes. Roles are always managed by trusted code.
+        unset($user[$this->auth->params['roles']]);
+        foreach (array_keys($user) as $field) {
+            if (!in_array($field, ['name', 'image'], true)) {
+                throw new UserException("Invalid registration field `$field`", 400);
+            }
         }
 
+        $user['provider'] = 'local';
         $user = $this->auth->register($uid, $password, $user);
 
         $user['uid'] = $uid;
