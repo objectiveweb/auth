@@ -450,7 +450,7 @@ class BasicAuth extends \Objectiveweb\Auth
         if (!$credential || ($credential['user_id'] ?? null) != $userid) {
             throw new UserException('Credential not found', 404);
         }
-        $this->credentials[$provider][$uid]['verified_at'] = $credential['verified_at'] ?: date('Y-m-d H:i:s');
+        $this->credentials[$provider][$uid]['verified_at'] = ($credential['verified_at'] ?? null) ?: date('Y-m-d H:i:s');
         $this->credentials[$provider][$uid]['token'] = null;
         $this->credentials[$provider][$uid]['token_expires_at'] = null;
     }
