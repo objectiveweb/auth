@@ -915,6 +915,71 @@ class DBAuthSqliteTest extends TestCase
         self::$auth->login('suspended@example.com', 'secret');
     }
 
+    public function testVerificationTokensArePerCredentialInSqlite(): void
+    {
+        $user = self::$auth->register('account@example.com', 'secret');
+        self::$auth->create_credential($user['id'], 'email', 'account@example.com');
+        self::$auth->create_credential($user['id'], 'phone', '+5511888888888');
+
+        $emailToken = self::$auth->issue_credential_token($user['id'], 'email', 'account@example.com');
+        $phoneToken = self::$auth->issue_credential_token($user['id'], 'phone', '+5511888888888');
+
+        $stored = self::$auth->get_credential('email', 'account@example.com');
+        $this->assertSame(hash('sha256', $emailToken), $stored['token']);
+        $this->assertNotSame($emailToken, $stored['token']);
+        $this->assertFalse(self::$auth->verify_credential_token('email', 'account@example.com', $phoneToken));
+        $this->assertFalse(self::$auth->verify_credential_token('phone', '+5511888888888', $emailToken));
+
+        $this->assertTrue(self::$auth->verify_credential_token('email', 'account@example.com', $emailToken));
+        $this->assertFalse(self::$auth->verify_credential_token('email', 'account@example.com', $emailToken));
+        $this->assertNotEmpty(self::$auth->get_credential('email', 'account@example.com')['verified_at']);
+        $this->assertNull(self::$auth->get_credential('email', 'account@example.com')['token']);
+        $this->assertNull(self::$auth->get_credential('phone', '+5511888888888')['verified_at']);
+        $this->assertTrue(self::$auth->verify_credential_token('phone', '+5511888888888', $phoneToken));
+
+        $listed = self::$auth->get_credentials($user['id']);
+        foreach ($listed as $credential) {
+            $this->assertArrayNotHasKey('token', $credential);
+            $this->assertArrayNotHasKey('token_expires_at', $credential);
+        }
+    }
+
+    public function testVerificationTokenExpiresAndOnlyOwnerCanIssue(): void
+    {
+        $owner = self::$auth->register('owner@example.com', 'secret');
+        $other = self::$auth->register('other@example.com', 'secret');
+        self::$auth->create_credential($owner['id'], 'email', 'owner@example.com');
+
+        try {
+            self::$auth->issue_credential_token($other['id'], 'email', 'owner@example.com');
+            $this->fail('A different user issued verification for this credential');
+        } catch (UserException $e) {
+            $this->assertSame(404, $e->getCode());
+        }
+
+        $token = self::$auth->issue_credential_token($owner['id'], 'email', 'owner@example.com');
+        self::$db->update('auth_credentials', [
+            'token_expires_at' => date('Y-m-d H:i:s', time() - 60),
+        ], ['provider' => 'email', 'uid' => 'owner@example.com']);
+
+        $this->assertFalse(self::$auth->verify_credential_token('email', 'owner@example.com', $token));
+        $this->assertNull(self::$auth->get_credential('email', 'owner@example.com')['verified_at']);
+    }
+
+    public function testCredentialRenameInvalidatesPriorVerification(): void
+    {
+        $owner = self::$auth->register('owner@example.com', 'secret');
+        self::$auth->create_credential($owner['id'], 'phone', '+5511888888888');
+        $token = self::$auth->issue_credential_token($owner['id'], 'phone', '+5511888888888');
+        $this->assertTrue(self::$auth->verify_credential_token('phone', '+5511888888888', $token));
+        $renamed = self::$auth->rename_credential(
+            $owner['id'], 'phone', '+5511888888888', 'phone', '+5511999999999'
+        );
+        $this->assertNull($renamed['verified_at']);
+        $this->assertNull($renamed['token']);
+        $this->assertNull($renamed['token_expires_at']);
+    }
+
     public function testCredentialLifecycleEnforcesOwnershipUniquenessAndLastCredential(): void
     {
         $alice = self::$auth->register('alice@example.com', 'secret');
