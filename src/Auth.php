@@ -494,4 +494,21 @@ abstract class Auth
 
     abstract public function delete_credential($userid, string $provider, string $uid): bool;
 
+    /**
+     * Issue a one-time verification token for exactly one unverified credential.
+     * The returned secret must be delivered out of band by trusted application code.
+     */
+    abstract public function issue_credential_token($userid, string $provider, string $uid): string;
+
+    /**
+     * Redeem a token for one provider/UID; other credentials stay unchanged.
+     */
+    abstract public function verify_credential_token(string $provider, string $uid, string $token): bool;
+
+    /**
+     * Trusted integration hook: use only after independent provider proof
+     * (for example, a validated OAuth callback for this provider and UID).
+     */
+    abstract public function mark_credential_verified($userid, string $provider, string $uid): void;
+
 }
