@@ -393,7 +393,11 @@ class BasicAuth extends \Objectiveweb\Auth
         }
 
         $created = $this->credentials[$provider][$uid]['created'] ?? date('Y-m-d H:i:s');
-        $this->credentials[$provider][$uid] = array_merge($existing ?: [], [
+        $this->credentials[$provider][$uid] = array_merge([
+            'token' => null,
+            'token_expires_at' => null,
+            'verified_at' => null,
+        ], $existing ?: [], [
             'user_id' => $userid,
             'provider' => $provider,
             'uid' => $uid,
