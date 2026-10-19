@@ -25,6 +25,7 @@ abstract class Auth
             'token' => NULL, // Name of the field that should store user tokens
             'token_expires_field' => 'token_expires_at',
             'token_ttl' => 3600,
+            'credential_token_ttl' => 3600,
             'register_scope' => Auth::ANONYMOUS, // who is allowed to use /register
             'register_allow_grants' => false,
             'recovery_providers' => ['local', 'email', 'phone'],
