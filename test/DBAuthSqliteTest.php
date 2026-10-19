@@ -413,6 +413,153 @@ class DBAuthSqliteTest extends TestCase
         $this->assertSame($user['id'], $logged['id']);
     }
 
+    public function testPasswdResetTokenCannotBeReused(): void
+    {
+        $user = self::$auth->register('single-use@example.com', 'original-secret');
+        $token = self::$auth->update_token($user['id']);
+
+        self::$auth->passwd_reset($token, 'first-password');
+
+        try {
+            self::$auth->passwd_reset($token, 'second-password');
+            $this->fail('A consumed password reset token was accepted again');
+        } catch (UserException $exception) {
+            $this->assertSame(404, $exception->getCode());
+        }
+
+        $row = self::$db->select('auth_user', ['id' => $user['id']], ['limit' => 1])->fetch();
+        $this->assertTrue(password_verify('first-password', $row['password']));
+        $this->assertFalse(password_verify('second-password', $row['password']));
+        $this->assertNull($row['token']);
+        $this->assertNull($row['token_expires_at']);
+    }
+
+    public function testPasswdResetConcurrentRequestsCannotOverwriteWinner(): void
+    {
+        // Interleave two requests after the first has read the token but
+        // before it updates the row. This deterministically reproduces the
+        // race that an ID-only UPDATE allowed.
+        $db = new class ('sqlite::memory:') extends DB {
+            public ?\\Closure $beforeResetUpdate = null;
+
+            public function update(string $table, array $data, ?array $where = null): int
+            {
+                if ($table === 'user' && array_key_exists('password', $data)
+                    && array_key_exists('token', $data)
+                    && $this->beforeResetUpdate !== null) {
+                    $callback = $this->beforeResetUpdate;
+                    $this->beforeResetUpdate = null;
+                    $callback();
+                }
+                return parent::update($table, $data, $where);
+            }
+        };
+
+        $db->query(
+            'CREATE TABLE user (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                password TEXT,
+                token TEXT,
+                token_expires_at TEXT
+            )'
+        )->exec();
+
+        $auth = new DBAuth($db, [
+            'table' => 'user',
+            'created' => null,
+            'uuid' => null,
+            'token' => 'token',
+            'roles_table' => null,
+            'user_roles_table' => null,
+        ]);
+        $userId = $db->insert('user', [
+            'password' => password_hash('original-secret', PASSWORD_BCRYPT),
+            'token' => null,
+            'token_expires_at' => null,
+        ]);
+        $token = $auth->update_token($userId);
+
+        $competitorSucceeded = false;
+        $db->beforeResetUpdate = function () use ($auth, $token, &$competitorSucceeded): void {
+            // This reset wins first, consuming the only valid token.
+            $auth->passwd_reset($token, 'winning-password');
+            $competitorSucceeded = true;
+        };
+
+        try {
+            $auth->passwd_reset($token, 'stale-password');
+            $this->fail('The losing concurrent reset overwrote the winner');
+        } catch (UserException $exception) {
+            $this->assertSame(404, $exception->getCode());
+        }
+
+        $this->assertTrue($competitorSucceeded);
+        $row = $db->select('user', ['id' => $userId], ['limit' => 1])->fetch();
+        $this->assertTrue(password_verify('winning-password', $row['password']));
+        $this->assertFalse(password_verify('stale-password', $row['password']));
+        $this->assertNull($row['token']);
+    }
+
+    public function testPasswdResetDoesNotOverwriteRotatedToken(): void
+    {
+        $db = new class ('sqlite::memory:') extends DB {
+            public ?\\Closure $beforeResetUpdate = null;
+
+            public function update(string $table, array $data, ?array $where = null): int
+            {
+                if ($table === 'user' && array_key_exists('password', $data)
+                    && array_key_exists('token', $data)
+                    && $this->beforeResetUpdate !== null) {
+                    $callback = $this->beforeResetUpdate;
+                    $this->beforeResetUpdate = null;
+                    $callback();
+                }
+                return parent::update($table, $data, $where);
+            }
+        };
+
+        $db->query(
+            'CREATE TABLE user (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                password TEXT,
+                token TEXT,
+                token_expires_at TEXT
+            )'
+        )->exec();
+        $auth = new DBAuth($db, [
+            'table' => 'user',
+            'created' => null,
+            'uuid' => null,
+            'token' => 'token',
+            'roles_table' => null,
+            'user_roles_table' => null,
+        ]);
+        $userId = $db->insert('user', [
+            'password' => password_hash('original-secret', PASSWORD_BCRYPT),
+            'token' => null,
+            'token_expires_at' => null,
+        ]);
+        $oldToken = $auth->update_token($userId);
+        $newToken = null;
+        $db->beforeResetUpdate = function () use ($auth, $userId, &$newToken): void {
+            $newToken = $auth->update_token($userId);
+        };
+
+        try {
+            $auth->passwd_reset($oldToken, 'should-not-be-set');
+            $this->fail('A rotated token was ignored by the conditional update');
+        } catch (UserException $exception) {
+            $this->assertSame(404, $exception->getCode());
+        }
+
+        $row = $db->select('user', ['id' => $userId], ['limit' => 1])->fetch();
+        $this->assertTrue(password_verify('original-secret', $row['password']));
+        $this->assertSame(hash('sha256', $newToken), $row['token']);
+        $auth->passwd_reset($newToken, 'new-secret');
+        $row = $db->select('user', ['id' => $userId], ['limit' => 1])->fetch();
+        $this->assertTrue(password_verify('new-secret', $row['password']));
+    }
+
     public function testPasswdResetRejectsExpiredToken(): void
     {
         $user = self::$auth->register('expired@example.com', 'secret');
