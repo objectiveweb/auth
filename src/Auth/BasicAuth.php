@@ -327,6 +327,7 @@ class BasicAuth extends \Objectiveweb\Auth
                     'uid' => $uid,
                     'provider' => $provider,
                     'profile' => $profile,
+                    'verified_at' => $credential['verified_at'] ?? null,
                     'last_login' => $credential['last_login'] ?? null,
                     'created' => $credential['created'] ?? null,
                 ];
@@ -392,16 +393,66 @@ class BasicAuth extends \Objectiveweb\Auth
         }
 
         $created = $this->credentials[$provider][$uid]['created'] ?? date('Y-m-d H:i:s');
-        $this->credentials[$provider][$uid] = [
+        $this->credentials[$provider][$uid] = array_merge($existing ?: [], [
             'user_id' => $userid,
             'provider' => $provider,
             'uid' => $uid,
             'profile' => $profile,
             'last_login' => date('Y-m-d H:i:s'),
             'created' => $created,
-        ];
+        ]);
 
         return true;
+    }
+
+    public function issue_credential_token($userid, string $provider, string $uid): string
+    {
+        $credential = $this->get_credential($provider, $uid);
+        if (!$credential || ($credential['user_id'] ?? null) != $userid) {
+            throw new UserException('Credential not found', 404);
+        }
+        if (!empty($credential['verified_at'])) {
+            throw new UserException('Credential already verified', 409);
+        }
+
+        $secret = bin2hex(random_bytes(32));
+        $this->credentials[$provider][$uid]['token'] = hash('sha256', $secret);
+        $this->credentials[$provider][$uid]['token_expires_at'] = date(
+            'Y-m-d H:i:s',
+            time() + max(60, (int) ($this->params['credential_token_ttl'] ?? 3600))
+        );
+        return $secret;
+    }
+
+    public function verify_credential_token(string $provider, string $uid, string $token): bool
+    {
+        $credential = $this->get_credential($provider, $uid);
+        if ($token === '' || !$credential || !empty($credential['verified_at'])) {
+            return false;
+        }
+        $digest = $credential['token'] ?? null;
+        $expires = $credential['token_expires_at'] ?? null;
+        if (!is_string($digest) || !is_string($expires)
+            || $expires <= date('Y-m-d H:i:s')
+            || !hash_equals($digest, hash('sha256', $token))) {
+            return false;
+        }
+
+        $this->credentials[$provider][$uid]['verified_at'] = date('Y-m-d H:i:s');
+        $this->credentials[$provider][$uid]['token'] = null;
+        $this->credentials[$provider][$uid]['token_expires_at'] = null;
+        return true;
+    }
+
+    public function mark_credential_verified($userid, string $provider, string $uid): void
+    {
+        $credential = $this->get_credential($provider, $uid);
+        if (!$credential || ($credential['user_id'] ?? null) != $userid) {
+            throw new UserException('Credential not found', 404);
+        }
+        $this->credentials[$provider][$uid]['verified_at'] = $credential['verified_at'] ?: date('Y-m-d H:i:s');
+        $this->credentials[$provider][$uid]['token'] = null;
+        $this->credentials[$provider][$uid]['token_expires_at'] = null;
     }
 
     public function create_credential($userid, string $provider, string $uid, mixed $profile = null): array
@@ -453,6 +504,11 @@ class BasicAuth extends \Objectiveweb\Auth
 
         $credential['provider'] = $newProvider;
         $credential['uid'] = $newUid;
+        if ($provider !== $newProvider || $uid !== $newUid) {
+            $credential['verified_at'] = null;
+        }
+        $credential['token'] = null;
+        $credential['token_expires_at'] = null;
         $this->credentials[$newProvider][$newUid] = $credential;
 
         return $this->get_credential($newProvider, $newUid);
