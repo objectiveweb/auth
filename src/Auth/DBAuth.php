@@ -396,10 +396,30 @@ class DBAuth extends \Objectiveweb\Auth
             $payload[$tokenExpiresField] = null;
         }
 
-        $updated = $this->userTable->update(
-            $user[$this->params['id']],
-            $payload
-        )['updated'];
+        // The password change and token consumption must be one atomic
+        // compare-and-swap. Checking the token with SELECT alone is not
+        // enough: two requests can both read the same valid token.
+        $where = [
+            (string) $this->params['id'] => $user[$this->params['id']],
+            (string) $this->params['token'] => $this->resetTokenDigest((string) $token),
+        ];
+        if (is_string($tokenExpiresField) && $tokenExpiresField !== '') {
+            // Also reject a concurrently replaced or invalidated expiry.
+            $where[$tokenExpiresField] = $user[$tokenExpiresField];
+            if ($user[$tokenExpiresField] <= date('Y-m-d H:i:s')) {
+                throw new UserException('Hash not found', 404);
+            }
+        }
+
+        // DB::update() uses the configured table prefix and returns the
+        // affected row count. Once the first request clears the token, every
+        // competing request fails the token predicate without changing the
+        // new password.
+        $updated = $this->db->update(
+            (string) $this->params['table'],
+            $payload,
+            $where
+        );
 
         if ($updated !== 1) {
             throw new UserException('Hash not found', 404);
