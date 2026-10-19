@@ -41,6 +41,7 @@ class DBAuthSqliteTest extends TestCase
                 user_id INTEGER NOT NULL,
                 profile TEXT NULL,
                 token TEXT NULL,
+                token_expires_at TEXT NULL,
                 verified_at TEXT NULL,
                 last_login TEXT NULL,
                 created TEXT NULL,
@@ -585,7 +586,7 @@ class DBAuthSqliteTest extends TestCase
         $this->assertCount(2, $credentials);
         foreach ($credentials as $credential) {
             $this->assertSame(
-                ['uid', 'provider', 'profile', 'last_login', 'created'],
+                ['uid', 'provider', 'profile', 'verified_at', 'last_login', 'created'],
                 array_keys($credential)
             );
             $this->assertArrayHasKey('last_login', $credential);
