@@ -93,7 +93,7 @@ class BasicAuthTest extends TestCase
 
         foreach ($credentials as $credential) {
             $this->assertSame(
-                ['uid', 'provider', 'profile', 'last_login', 'created'],
+                ['uid', 'provider', 'profile', 'verified_at', 'last_login', 'created'],
                 array_keys($credential)
             );
             $this->assertArrayHasKey('last_login', $credential);
