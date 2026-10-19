@@ -407,6 +407,9 @@ class BasicAuth extends \Objectiveweb\Auth
 
     public function issue_credential_token($userid, string $provider, string $uid): string
     {
+        if (!in_array($provider, (array) $this->params['credential_token_providers'], true)) {
+            throw new UserException('Provider does not support out-of-band verification', 400);
+        }
         $credential = $this->get_credential($provider, $uid);
         if (!$credential || ($credential['user_id'] ?? null) != $userid) {
             throw new UserException('Credential not found', 404);
@@ -426,6 +429,9 @@ class BasicAuth extends \Objectiveweb\Auth
 
     public function verify_credential_token(string $provider, string $uid, string $token): bool
     {
+        if (!in_array($provider, (array) $this->params['credential_token_providers'], true)) {
+            return false;
+        }
         $credential = $this->get_credential($provider, $uid);
         if ($token === '' || !$credential || !empty($credential['verified_at'])) {
             return false;
