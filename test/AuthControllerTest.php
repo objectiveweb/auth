@@ -353,6 +353,65 @@ class AuthControllerTest extends TestCase
         $this->assertSame([], $result);
     }
 
+    public function testPublicRegistrationCreatesOnlyLocalCredential(): void
+    {
+        $user = $this->controller->postRegister([
+            'uid' => 'new@example.com',
+            'password' => 'secret',
+            'name' => 'New user',
+        ]);
+
+        $this->assertNotFalse($this->auth->get_credential('local', 'new@example.com'));
+        $this->assertFalse($this->auth->get_credential('email', 'new@example.com'));
+        $this->assertSame('New user', $user['name']);
+    }
+
+    public function testPublicRegistrationRejectsProviderAndPrivilegedAttributes(): void
+    {
+        $payloads = [
+            ['provider' => 'google'],
+            ['provider' => 'email'],
+            ['provider' => 'local'],
+            ['profile' => ['email_verified' => true]],
+            ['id' => 100],
+            ['uuid' => 'fake-uuid'],
+            ['disabled_at' => null],
+            ['token' => 'forged'],
+            ['context' => ['admin' => true]],
+        ];
+
+        foreach ($payloads as $i => $payload) {
+            $uid = "forbidden-{$i}@example.com";
+            try {
+                $this->controller->postRegister(array_merge([
+                    'uid' => $uid,
+                    'password' => 'secret',
+                ], $payload));
+                $this->fail('Untrusted registration field was accepted');
+            } catch (UserException $e) {
+                $this->assertSame(400, $e->getCode());
+            }
+            $this->assertFalse($this->auth->get_credential('local', $uid));
+            $this->assertFalse($this->auth->get_credential('email', $uid));
+            $this->assertFalse($this->auth->get_credential('google', $uid));
+        }
+    }
+
+    public function testPublicRegistrationNeverAllowsRoleGrants(): void
+    {
+        $auth = new BasicAuth([], [
+            'token' => 'token',
+            'register_allow_grants' => true,
+        ]);
+        $controller = new AuthController($auth);
+        $user = $controller->postRegister([
+            'uid' => 'no-admin@example.com',
+            'password' => 'secret',
+            'roles' => ['admin'],
+        ]);
+        $this->assertSame([], $user['roles'] ?? []);
+    }
+
     public function testPostRegisterStripsRolesByDefault(): void
     {
         $user = $this->controller->postRegister([
