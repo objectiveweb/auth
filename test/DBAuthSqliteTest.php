@@ -440,7 +440,7 @@ class DBAuthSqliteTest extends TestCase
         // before it updates the row. This deterministically reproduces the
         // race that an ID-only UPDATE allowed.
         $db = new class ('sqlite::memory:') extends DB {
-            public ?\\Closure $beforeResetUpdate = null;
+            public ?Closure $beforeResetUpdate = null;
 
             public function update(string $table, array $data, ?array $where = null): int
             {
@@ -503,7 +503,7 @@ class DBAuthSqliteTest extends TestCase
     public function testPasswdResetDoesNotOverwriteRotatedToken(): void
     {
         $db = new class ('sqlite::memory:') extends DB {
-            public ?\\Closure $beforeResetUpdate = null;
+            public ?Closure $beforeResetUpdate = null;
 
             public function update(string $table, array $data, ?array $where = null): int
             {
