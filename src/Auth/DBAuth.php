@@ -21,6 +21,7 @@ class DBAuth extends \Objectiveweb\Auth
             'credentials_table' => 'user_credentials',
             'credentials_last_login' => 'last_login',
             'credentials_created' => 'created',
+            'credential_token_ttl' => 3600,
             'uuid' => 'uuid',
             'roles_table' => 'role',
             'user_roles_table' => 'user_roles',
@@ -593,6 +594,81 @@ class DBAuth extends \Objectiveweb\Auth
         return true;
     }
 
+    /**
+     * Tokens are per credential, never per user. Only trusted service code
+     * should issue them and deliver them through the credential's verified
+     * address/channel; never return this secret from a public HTTP endpoint.
+     */
+    public function issue_credential_token($userid, string $provider, string $uid): string
+    {
+        $credential = $this->get_credential($provider, $uid);
+        if (!$credential || ($credential['user_id'] ?? null) != $userid) {
+            throw new UserException('Credential not found', 404);
+        }
+        if (!empty($credential['verified_at'])) {
+            throw new UserException('Credential already verified', 409);
+        }
+
+        $secret = bin2hex(random_bytes(32));
+        $updated = $this->db->update($this->params['credentials_table'], [
+            'token' => hash('sha256', $secret),
+            'token_expires_at' => date('Y-m-d H:i:s', time() + max(60, (int) $this->params['credential_token_ttl'])),
+        ], [
+            'user_id' => $userid, 'provider' => $provider, 'uid' => $uid,
+        ]);
+        if ($updated !== 1) {
+            throw new UserException('Credential not found', 404);
+        }
+        return $secret;
+    }
+
+    public function verify_credential_token(string $provider, string $uid, string $token): bool
+    {
+        if ($token === '') {
+            return false;
+        }
+        $credential = $this->get_credential($provider, $uid);
+        if (!$credential || !empty($credential['verified_at'])) {
+            return false;
+        }
+        $digest = $credential['token'] ?? null;
+        $expires = $credential['token_expires_at'] ?? null;
+        if (!is_string($digest) || !is_string($expires)
+            || $expires <= date('Y-m-d H:i:s')
+            || !hash_equals($digest, hash('sha256', $token))) {
+            return false;
+        }
+
+        // Consume the matching token atomically. Concurrent attempts cannot
+        // both mark the same credential verified.
+        return $this->db->update($this->params['credentials_table'], [
+            'verified_at' => date('Y-m-d H:i:s'),
+            'token' => null,
+            'token_expires_at' => null,
+        ], [
+            'user_id' => $credential['user_id'],
+            'provider' => $provider,
+            'uid' => $uid,
+            'token' => $digest,
+            'verified_at' => null,
+        ]) === 1;
+    }
+
+    public function mark_credential_verified($userid, string $provider, string $uid): void
+    {
+        $credential = $this->get_credential($provider, $uid);
+        if (!$credential || ($credential['user_id'] ?? null) != $userid) {
+            throw new UserException('Credential not found', 404);
+        }
+        $this->db->update($this->params['credentials_table'], [
+            'verified_at' => $credential['verified_at'] ?: date('Y-m-d H:i:s'),
+            'token' => null,
+            'token_expires_at' => null,
+        ], [
+            'user_id' => $userid, 'provider' => $provider, 'uid' => $uid,
+        ]);
+    }
+
     public function create_credential($userid, string $provider, string $uid, mixed $profile = null): array
     {
         $this->get($userid);
@@ -643,6 +719,11 @@ class DBAuth extends \Objectiveweb\Auth
         $this->db->update($this->params['credentials_table'], [
             'provider' => $newProvider,
             'uid' => $newUid,
+            // Changing either identity component requires fresh proof.
+            'verified_at' => ($provider === $newProvider && $uid === $newUid)
+                ? ($credential['verified_at'] ?? null) : null,
+            'token' => null,
+            'token_expires_at' => null,
         ], [
             'user_id' => $userid,
             'provider' => $provider,
@@ -695,6 +776,7 @@ class DBAuth extends \Objectiveweb\Auth
                 'uid' => $row['uid'] ?? null,
                 'provider' => $row['provider'] ?? null,
                 'profile' => $profile,
+                'verified_at' => $row['verified_at'] ?? null,
                 'last_login' => ($lastLoginField && array_key_exists($lastLoginField, $row))
                     ? $row[$lastLoginField]
                     : ($row['last_login'] ?? null),
