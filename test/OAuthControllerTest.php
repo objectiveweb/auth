@@ -91,14 +91,13 @@ class OAuthControllerTest extends TestCase
         );
     }
 
-    public function testOAuthCallbackConsumesStateAndLinksExistingEmailUser(): void
+    public function testOAuthCallbackDoesNotLinkAccountByEmail(): void
     {
         $auth = new OAuthTrackingBasicAuth([], ['token' => 'token']);
-        $user = $auth->register('linked@example.com', 'secret', ['provider' => 'email']);
+        $existing = $auth->register('linked@example.com', 'secret', ['provider' => 'email']);
 
         OAuthTestProvider::$resourceOwner = $this->resourceOwner(
-            'provider-user-id',
-            'linked@example.com'
+            'provider-user-id', 'linked@example.com'
         );
         $_SESSION['oauth2state'] = 'test-oauth-state';
 
@@ -109,20 +108,58 @@ class OAuthControllerTest extends TestCase
                 'redirectUri' => 'https://app.example/oauth/test',
             ],
         ]);
-
-        $controller->get('test', [
-            'code' => 'oauth-code',
-            'state' => 'test-oauth-state',
-        ]);
+        $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
 
         $this->assertArrayNotHasKey('oauth2state', $_SESSION);
         $this->assertSame('/', $controller->redirectedTo);
         $this->assertTrue($auth->sessionRegenerated);
-        $this->assertSame($user['id'], $auth->user()['id']);
+        $this->assertNotSame($existing['id'], $auth->user()['id']);
+        $this->assertSame($existing['id'], $auth->get_credential('email', 'linked@example.com')['user_id']);
 
         $credential = $auth->get_credential('test', 'provider-user-id');
-        $this->assertNotFalse($credential);
-        $this->assertSame($user['id'], $credential['user_id']);
+        $this->assertSame($auth->user()['id'], $credential['user_id']);
+        $this->assertNotEmpty($credential['verified_at']);
+        $this->assertFalse($auth->get_credential('email', 'provider-user-id'));
+    }
+
+    public function testUnverifiedOAuthCredentialCannotBeUsedToLogInAnotherAccount(): void
+    {
+        $auth = new OAuthTrackingBasicAuth([], ['token' => 'token']);
+        $victim = $auth->register('victim@example.com', 'secret');
+        $auth->create_credential($victim['id'], 'google', 'attacker-provider-subject');
+
+        $controller = new OAuthController($auth);
+        $this->expectException(AuthException::class);
+        $this->expectExceptionCode(403);
+        $this->invokeOAuthLogin($controller, 'google', $this->resourceOwner('attacker-provider-subject'));
+    }
+
+    public function testAuthenticatedAccountCanConfirmItsOwnPendingOAuthCredential(): void
+    {
+        $auth = new OAuthTrackingBasicAuth([], ['token' => 'token']);
+        $owner = $auth->register('owner@example.com', 'secret');
+        $auth->create_credential($owner['id'], 'google', 'owner-subject');
+        $auth->login('owner@example.com', 'secret');
+
+        $controller = new OAuthController($auth);
+        $logged = $this->invokeOAuthLogin($controller, 'google', $this->resourceOwner('owner-subject'));
+
+        $this->assertSame($owner['id'], $logged['id']);
+        $this->assertNotEmpty($auth->get_credential('google', 'owner-subject')['verified_at']);
+    }
+
+    public function testSignedInUserCannotSwitchToDifferentVerifiedOAuthAccount(): void
+    {
+        $auth = new OAuthTrackingBasicAuth([], ['token' => 'token']);
+        $other = $auth->register('other-subject', null, ['provider' => 'google']);
+        $auth->mark_credential_verified($other['id'], 'google', 'other-subject');
+        $auth->register('current@example.com', 'secret');
+        $auth->login('current@example.com', 'secret');
+        $controller = new OAuthController($auth);
+
+        $this->expectException(\Objectiveweb\Auth\UserException::class);
+        $this->expectExceptionCode(409);
+        $this->invokeOAuthLogin($controller, 'google', $this->resourceOwner('other-subject'));
     }
 
     public function testInvalidOAuthStateIsCleared(): void
@@ -194,6 +231,7 @@ class OAuthControllerTest extends TestCase
     {
         $auth = new OAuthTrackingBasicAuth([], ['token' => 'token']);
         $user = $auth->register('google-user-id', null, ['provider' => 'google']);
+        $auth->mark_credential_verified($user['id'], 'google', 'google-user-id');
 
         $controller = new OAuthController($auth, []);
         $logged = $this->invokeOAuthLogin(
