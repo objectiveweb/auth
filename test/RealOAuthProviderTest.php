@@ -149,7 +149,10 @@ final class RealOAuthProviderTest extends TestCase
             $provider === 'google' ? 'oauth2.googleapis.com' : 'graph.facebook.com',
             $token->getUri()->getHost()
         );
-        $this->assertStringContainsString('/token', (string) $token->getUri());
+        $this->assertSame(
+            $provider === 'google' ? '/token' : '/v22.0/oauth/access_token',
+            $token->getUri()->getPath()
+        );
         parse_str((string) $token->getBody(), $body);
         $this->assertSame('authorization_code', $body['grant_type']);
         $this->assertSame('integration-auth-code', $body['code']);
