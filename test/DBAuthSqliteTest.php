@@ -9,6 +9,22 @@ use Objectiveweb\Auth\UserException;
 use Objectiveweb\DB;
 use PHPUnit\Framework\TestCase;
 
+class DBAuthExpiryRaceDB extends DB
+{
+    public ?Closure $beforeVerificationUpdate = null;
+
+    public function update(string $table, array $data, ?array $where = null): int
+    {
+        if ($table === 'auth_credentials' && array_key_exists('verified_at', $data)
+            && isset($where['token']) && $this->beforeVerificationUpdate !== null) {
+            $callback = $this->beforeVerificationUpdate;
+            $this->beforeVerificationUpdate = null;
+            $callback();
+        }
+        return parent::update($table, $data, $where);
+    }
+}
+
 class DBAuthSqliteTest extends TestCase
 {
     private static DB $db;
@@ -1114,6 +1130,79 @@ class DBAuthSqliteTest extends TestCase
 
         $this->assertFalse(self::$auth->verify_credential_token('email', 'owner@example.com', $token));
         $this->assertNull(self::$auth->get_credential('email', 'owner@example.com')['verified_at']);
+    }
+
+    /**
+     * An expiry changed after credential lookup must invalidate the pending
+     * compare-and-swap rather than marking the account verified.
+     */
+    public function testVerificationRejectsExpiryChangedBetweenReadAndUpdate(): void
+    {
+        [$db, $auth, $token] = $this->verificationRaceFixture();
+        $db->beforeVerificationUpdate = static function () use ($db): void {
+            $db->update('auth_credentials', [
+                'token_expires_at' => date('Y-m-d H:i:s', time() - 60),
+            ], ['provider' => 'email', 'uid' => 'race@example.com']);
+        };
+
+        $this->assertFalse($auth->verify_credential_token('email', 'race@example.com', $token));
+        $credential = $auth->get_credential('email', 'race@example.com');
+        $this->assertNull($credential['verified_at']);
+        $this->assertSame(hash('sha256', $token), $credential['token']);
+    }
+
+    /**
+     * An expiry that passes during the database write must roll back the
+     * successful compare-and-swap; simply matching the old expiry is not enough.
+     */
+    public function testVerificationRollsBackIfTokenExpiresDuringUpdate(): void
+    {
+        [$db, $auth, $token] = $this->verificationRaceFixture(1);
+        $deadline = $auth->get_credential('email', 'race@example.com')['token_expires_at'];
+        $db->beforeVerificationUpdate = static function () use ($deadline): void {
+            while (date('Y-m-d H:i:s') <= $deadline) {
+                usleep(100000);
+            }
+        };
+
+        $this->assertFalse($auth->verify_credential_token('email', 'race@example.com', $token));
+        $credential = $auth->get_credential('email', 'race@example.com');
+        $this->assertNull($credential['verified_at']);
+        $this->assertSame(hash('sha256', $token), $credential['token']);
+        $this->assertSame($deadline, $credential['token_expires_at']);
+    }
+
+    /** @return array{DBAuthExpiryRaceDB, DBAuth, string} */
+    private function verificationRaceFixture(int $ttl = 3600): array
+    {
+        $db = new DBAuthExpiryRaceDB('sqlite::memory:');
+        $db->query(
+            'CREATE TABLE auth_credentials (
+                uid TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                user_id INTEGER NOT NULL,
+                token TEXT NULL,
+                token_expires_at TEXT NULL,
+                verified_at TEXT NULL,
+                PRIMARY KEY(uid, provider)
+            )'
+        )->exec();
+
+        $token = bin2hex(random_bytes(16));
+        $db->insert('auth_credentials', [
+            'uid' => 'race@example.com',
+            'provider' => 'email',
+            'user_id' => 1,
+            'token' => hash('sha256', $token),
+            'token_expires_at' => date('Y-m-d H:i:s', time() + $ttl),
+            'verified_at' => null,
+        ]);
+        $auth = new DBAuth($db, [
+            'credentials_table' => 'auth_credentials',
+            'roles_table' => null,
+            'user_roles_table' => null,
+        ]);
+        return [$db, $auth, $token];
     }
 
     public function testCredentialRenameInvalidatesPriorVerification(): void
