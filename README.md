@@ -467,6 +467,30 @@ If `redirectUri` is omitted, the controller derives it from the current request 
 
 OAuth authorization includes a fresh **PKCE S256** challenge and stores a per-provider authorization flow in the PHP session (`oauth2flows`). The callback requires the matching provider's state, the original initiating session principal, and a state created within the past 10 minutes. The state is consumed before exchanging the code, and the matching PKCE verifier is supplied to the token endpoint. Providers must support PKCE S256. OAuth accounts are linked by the provider's stable subject identifier only; matching email addresses never establishes or links identities.
 
+### Resource-owner profile compatibility
+
+The League OAuth2 `ResourceOwnerInterface` requires only `getId()` and
+`toArray()`. `OAuthController` therefore never assumes provider-specific
+`getName()`, `getAvatar()`, `getPictureUrl()` or `getEmail()` methods
+exist. It first reads usable values from optional getters when available, then
+uses well-known keys in `toArray()`:
+
+- **Name:** `name`, `display_name`/`displayName`, `full_name`,
+  `given_name` + `family_name`, `first_name` + `last_name`, and
+  finally username/login-style display hints.
+- **Avatar:** `avatar_url`, `picture`, `picture_url`, `image`,
+  `image_url`, `profile_image_url`, or a nested `picture.data.url`;
+  only valid HTTP(S) URLs are accepted.
+- **Email hint:** `email`, `email_address` or `mail`, when syntactically
+  valid. This is **only a display hint**, never proof of email ownership
+  and never grounds for automatic account linking.
+
+Optional methods returning empty/malformed values or throwing are ignored.
+Missing fields remain `null`, and the ordinary local-account display-name
+default applies when the user explicitly creates an account. The raw provider
+profile remains associated only with its provider credential, not as proof of
+unrelated local identities.
+
 ### First-time OAuth account choice (no automatic duplicate accounts)
 
 After the OAuth authorization-code/PKCE exchange, if no `(provider, uid)` credential exists, the user is **not logged in** and no local user is created. A short-lived `oauth2pending` entry remains in their PHP session; it contains the provider's verified subject, profile, safe display hints, and creation timestamp, and expires after 10 minutes. The OAuth state is already consumed.
