@@ -79,27 +79,147 @@ class OAuthControllerTest extends TestCase
         $this->assertSame('https://oauth.example/authorize', $controller->redirectedTo);
     }
 
-    public function testAuthorizationDerivesRedirectUriWhenNotConfigured(): void
+    public function testAuthorizationRequiresExplicitRedirectUriEvenWithRequestHeaders(): void
     {
-        $_SERVER['HTTP_X_FORWARDED_PROTO'] = 'https, http';
-        $_SERVER['HTTP_HOST'] = 'app.example';
+        $_SERVER['HTTP_HOST'] = 'attacker.example';
+        $_SERVER['HTTP_X_FORWARDED_HOST'] = 'trusted.example';
+        $_SERVER['HTTP_X_FORWARDED_PROTO'] = 'https';
+        $_SERVER['REQUEST_SCHEME'] = 'https';
         $_SERVER['PHP_SELF'] = '/index.php/oauth';
         $_SERVER['PATH_INFO'] = '/test';
+
+        $auth = new BasicAuth([], ['token' => 'token']);
+        $controller = new OAuthTestController($auth, [
+            'test' => ['clientId' => 'client-id', 'clientSecret' => 'client-secret'],
+        ]);
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('OAuth redirectUri must be explicitly configured');
+        $controller->get('test', []);
+    }
+
+    public function testOauthRejectsEmptyRedirectUri(): void
+    {
+        $auth = new BasicAuth([], ['token' => 'token']);
+        $controller = new OAuthTestController($auth, [
+            'test' => [
+                'clientId' => 'client-id', 'clientSecret' => 'client-secret',
+                'redirectUri' => '',
+            ],
+        ]);
+        $this->expectException(\InvalidArgumentException::class);
+        $controller->get('test', []);
+    }
+
+    /**
+     * @dataProvider invalidRedirectUris
+     */
+    public function testAuthorizationRejectsUnsafeConfiguredRedirectUris(mixed $redirectUri): void
+    {
+        $auth = new BasicAuth([], ['token' => 'token']);
+        $controller = new OAuthTestController($auth, [
+            'test' => [
+                'clientId' => 'client-id',
+                'clientSecret' => 'client-secret',
+                'redirectUri' => $redirectUri,
+            ],
+        ]);
+
+        $this->expectException(\InvalidArgumentException::class);
+        $controller->get('test', []);
+    }
+
+    public static function invalidRedirectUris(): array
+    {
+        return [
+            'relative callback' => ['/oauth/test'],
+            'scheme-relative callback' => ['//attacker.example/oauth/test'],
+            'insecure public HTTP' => ['http://app.example/oauth/test'],
+            'insecure non-loopback private address' => ['http://192.168.1.4/oauth/test'],
+            'javascript scheme' => ['javascript:alert(1)'],
+            'file scheme' => ['file:///tmp/callback'],
+            'no host' => ['https:///oauth/test'],
+            'embedded credentials' => ['https://alice:secret@app.example/oauth/test'],
+            'URL fragment' => ['https://app.example/oauth/test#code'],
+            'embedded newline' => ["https://app.example/oauth/test\r\nInjected: yes"],
+            'backslash' => ['https://app.example\attacker.example/oauth/test'],
+            'non-string value' => [['https://app.example/oauth/test']],
+        ];
+    }
+
+    /**
+     * @dataProvider validRedirectUris
+     */
+    public function testAuthorizationAcceptsTrustedConfiguredRedirectUris(string $redirectUri): void
+    {
+        $_SERVER['HTTP_HOST'] = 'attacker.example';
+        $_SERVER['HTTP_X_FORWARDED_HOST'] = 'attacker.example';
+        $_SERVER['HTTP_X_FORWARDED_PROTO'] = 'http';
 
         $auth = new BasicAuth([], ['token' => 'token']);
         $controller = new OAuthTestController($auth, [
             'test' => [
                 'clientId' => 'client-id',
                 'clientSecret' => 'client-secret',
+                'redirectUri' => $redirectUri,
             ],
         ]);
-
         $controller->get('test', []);
 
-        $this->assertSame(
-            'https://app.example/oauth/test',
-            OAuthTestProvider::$lastConfig['redirectUri']
-        );
+        $this->assertSame($redirectUri, OAuthTestProvider::$lastConfig['redirectUri']);
+        $this->assertSame('https://oauth.example/authorize', $controller->redirectedTo);
+        $this->assertArrayHasKey('test', $_SESSION['oauth2flows']);
+    }
+
+    public static function validRedirectUris(): array
+    {
+        return [
+            'production HTTPS' => ['https://app.example/oauth/test'],
+            'custom HTTPS port' => ['https://auth.example:8443/oauth/test'],
+            'static query' => ['https://app.example/oauth/test?tenant=example'],
+            'localhost development' => ['http://localhost:8000/oauth/test'],
+            'IPv4 loopback development' => ['http://127.0.0.1:8080/oauth/test'],
+            'IPv6 loopback development' => ['http://[::1]:8080/oauth/test'],
+        ];
+    }
+
+    public function testExplicitLinkAlsoRequiresTrustedRedirectUri(): void
+    {
+        $auth = new BasicAuth([], ['token' => 'token']);
+        $auth->register('owner@example.com', 'password');
+        $auth->login('owner@example.com', 'password');
+        $this->withLinkHeaders($auth);
+        $_SERVER['HTTP_HOST'] = 'trusted.example';
+        $_SERVER['HTTP_X_FORWARDED_PROTO'] = 'https';
+
+        $controller = new OAuthTestController($auth, [
+            'test' => ['clientId' => 'client-id', 'clientSecret' => 'client-secret'],
+        ]);
+        try {
+            $controller->postLink('test');
+            $this->fail('Explicit link permitted a request-derived callback URI');
+        } catch (\InvalidArgumentException $e) {
+            $this->assertStringContainsString('explicitly configured', $e->getMessage());
+        }
+        $this->assertArrayNotHasKey('test', $_SESSION['oauth2flows'] ?? []);
+    }
+
+    public function testOAuthCallbackAlsoRequiresConfiguredRedirectUri(): void
+    {
+        $auth = new BasicAuth([], ['token' => 'token']);
+        $controller = new OAuthTestController($auth, [
+            'test' => ['clientId' => 'client-id', 'clientSecret' => 'client-secret'],
+        ]);
+        $_SESSION['oauth2flows']['test'] = [
+            'state' => 'test-oauth-state',
+            'created_at' => time(),
+            'code_verifier' => 'test-verifier',
+            'principal' => null,
+            'intent' => 'login',
+        ];
+
+        $this->expectException(\InvalidArgumentException::class);
+        $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
     }
 
     public function testFirstTimeOAuthOffersAccountChoiceWithoutCreatingUser(): void
