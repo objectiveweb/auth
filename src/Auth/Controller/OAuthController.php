@@ -283,9 +283,11 @@ class OAuthController extends AuthController
             throw new \Exception("Invalid provider $id", 406);
         }
         $config = $this->providers[$id];
-        if (empty($config['redirectUri'])) {
-            $config['redirectUri'] = $this->resolveRedirectUri();
-        }
+        // Redirect URIs are part of the OAuth client registration. Never
+        // synthesize them from HTTP_HOST, forwarded headers, or request paths.
+        // This is enforced in all environments so production cannot silently
+        // fall back to attacker-controlled request metadata.
+        $config['redirectUri'] = $this->validateRedirectUri($config['redirectUri'] ?? null);
         $classname = "\\League\\OAuth2\\Client\\Provider\\" . ucfirst($id);
 
         return new $classname($config);
@@ -323,25 +325,45 @@ class OAuthController extends AuthController
         return $authUrl;
     }
 
-    protected function resolveRedirectUri(): string
+    /**
+     * Require a trusted, pre-registered callback URL for every OAuth provider.
+     * Only HTTPS is accepted, except HTTP loopback URLs for local development.
+     * Static query parameters may be used if they are registered with the
+     * provider; fragments and embedded credentials are never valid callbacks.
+     */
+    private function validateRedirectUri(mixed $uri): string
     {
-        $forwardedProto = trim((string) ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? ''));
-        if ($forwardedProto !== '') {
-            $forwardedProto = trim(explode(',', $forwardedProto, 2)[0]);
+        if (!is_string($uri) || $uri === '') {
+            throw new \InvalidArgumentException(
+                'OAuth redirectUri must be explicitly configured for each provider'
+            );
         }
 
-        $scheme = $forwardedProto !== ''
-            ? $forwardedProto
-            : (string) ($_SERVER['REQUEST_SCHEME'] ?? 'https');
-        $host = (string) ($_SERVER['HTTP_HOST'] ?? '');
-        if ($host === '') {
-            throw new \RuntimeException('Cannot determine OAuth redirect URI without HTTP_HOST');
+        if (preg_match('/[\x00-\x20\x7f\\\\]/', $uri) || filter_var($uri, FILTER_VALIDATE_URL) === false) {
+            throw new \InvalidArgumentException('Invalid OAuth redirectUri');
         }
 
-        $script = str_replace('/index.php', '', (string) ($_SERVER['PHP_SELF'] ?? ''));
-        $pathInfo = (string) ($_SERVER['PATH_INFO'] ?? '');
+        $parts = parse_url($uri);
+        if (!is_array($parts)
+            || empty($parts['host'])
+            || !isset($parts['scheme'])
+            || isset($parts['user'])
+            || isset($parts['pass'])
+            || isset($parts['fragment'])) {
+            throw new \InvalidArgumentException('Invalid OAuth redirectUri');
+        }
 
-        return sprintf('%s://%s%s%s', $scheme, $host, $script, $pathInfo);
+        $scheme = strtolower($parts['scheme']);
+        $host = strtolower($parts['host']);
+        $loopback = in_array($host, ['localhost', '127.0.0.1', '[::1]'], true);
+
+        if ($scheme !== 'https' && !($scheme === 'http' && $loopback)) {
+            throw new \InvalidArgumentException(
+                'OAuth redirectUri must use HTTPS (HTTP is only allowed on loopback)'
+            );
+        }
+
+        return $uri;
     }
 
     protected function redirect(string $location): void
