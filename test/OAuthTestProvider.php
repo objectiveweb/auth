@@ -5,6 +5,8 @@ namespace League\OAuth2\Client\Provider;
 final class Test
 {
     public static array $lastConfig = [];
+    public static array $lastAuthorizationOptions = [];
+    public static array $lastTokenOptions = [];
     public static mixed $resourceOwner = null;
     public static string $state = 'test-oauth-state';
 
@@ -13,8 +15,9 @@ final class Test
         self::$lastConfig = $config;
     }
 
-    public function getAuthorizationUrl(): string
+    public function getAuthorizationUrl(array $options = []): string
     {
+        self::$lastAuthorizationOptions = $options;
         return 'https://oauth.example/authorize';
     }
 
@@ -25,7 +28,9 @@ final class Test
 
     public function getAccessToken(string $grant, array $options): object
     {
-        if ($grant !== 'authorization_code' || ($options['code'] ?? null) !== 'oauth-code') {
+        self::$lastTokenOptions = $options;
+        if ($grant !== 'authorization_code' || ($options['code'] ?? null) !== 'oauth-code'
+            || empty($options['code_verifier'])) {
             throw new \RuntimeException('Unexpected OAuth token request');
         }
 
