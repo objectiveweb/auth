@@ -19,12 +19,20 @@ class OAuthController extends AuthController
     private $providers;
 
     private const FLOW_KEY = 'oauth2flows';
+    private const PENDING_KEY = 'oauth2pending';
+    private const PENDING_TTL = 600;
 
-    function __construct(\Objectiveweb\Auth $auth, array $providers = [])
-    {
+    private string $pendingAccountRedirect;
+
+    function __construct(
+        \Objectiveweb\Auth $auth,
+        array $providers = [],
+        string $pendingAccountRedirect = '/?oauth=choose-account'
+    ) {
         parent::__construct($auth);
         $this->providers = $providers;
-
+        // Never allow an OAuth callback to redirect to an external origin.
+        $this->pendingAccountRedirect = $this->normalizeLogoutRedirect($pendingAccountRedirect);
     }
 
     /**
@@ -42,6 +50,8 @@ class OAuthController extends AuthController
         }
 
         if (empty($query['code'])) {
+            // Beginning a new login discards any unfinished account choice.
+            unset($_SESSION[self::PENDING_KEY]);
             $this->redirect($this->startAuthorization($id, $provider, 'login'));
             return;
         }
@@ -82,7 +92,11 @@ class OAuthController extends AuthController
             'code_verifier' => $flow['code_verifier'],
         ]);
         $resourceOwner = $provider->getResourceOwner($token);
-        $this->login($id, $resourceOwner, $flow['intent']);
+        $result = $this->login($id, $resourceOwner, $flow['intent']);
+        if (($result['status'] ?? null) === 'pending') {
+            $this->redirect($this->pendingAccountRedirect);
+            return;
+        }
         $this->redirect('/');
     }
 
@@ -97,7 +111,7 @@ class OAuthController extends AuthController
         if (!$this->auth->revalidate()) {
             throw new \Objectiveweb\Auth\AuthException('Authentication required to link account', 401);
         }
-        $this->assertLinkRequest();
+        $this->assertJsonCsrfPost();
         $provider = $this->buildProvider($id);
         // Return the URL for the application's browser to navigate to.
         // A JSON POST cannot reliably initiate cross-origin navigation by
@@ -105,7 +119,149 @@ class OAuthController extends AuthController
         return ['authorization_url' => $this->startAuthorization($id, $provider, 'link')];
     }
 
-    private function assertLinkRequest(): void
+    /**
+     * The application renders its account-choice page using this safe DTO.
+     * Nothing here constitutes a logged-in account or a verified email.
+     */
+    #[Middleware(RequireRole::class, Auth::ALL)]
+    function getPendingAccount(): array
+    {
+        $pending = $this->requirePendingAccount();
+        return [
+            'status' => 'account_choice_required',
+            'provider' => $pending['provider'],
+            'name' => $pending['name'],
+            'email_hint' => $pending['email_hint'],
+            'expires_at' => $pending['created_at'] + self::PENDING_TTL,
+            'choices' => ['create', 'existing'],
+            '_csrf' => $this->auth->management_csrf_token(),
+        ];
+    }
+
+    /**
+     * Explicit user choice: create an OAuth-only account.
+     * This is NEVER called automatically by the OAuth callback.
+     */
+    #[Middleware(RequireRole::class, Auth::ALL)]
+    function postCreateAccount(array $form = []): array
+    {
+        $this->assertJsonCsrfPost();
+        $pending = $this->requirePendingAccount();
+        $this->assertCanRegister();
+
+        foreach (array_keys($form) as $field) {
+            if ($field !== 'name') {
+                throw new UserException("Invalid account creation field `$field`", 400);
+            }
+        }
+        if (isset($form['name']) && (!is_string($form['name']) || trim($form['name']) === '')) {
+            throw new UserException('Invalid account name', 400);
+        }
+
+        if ($this->auth->get_credential($pending['provider'], $pending['uid'])) {
+            unset($_SESSION[self::PENDING_KEY]);
+            throw new UserException('OAuth identity is already associated with an account', 409);
+        }
+
+        $data = [
+            'uid' => $pending['uid'],
+            'provider' => $pending['provider'],
+            'profile' => $pending['profile'],
+            'name' => isset($form['name']) ? trim($form['name']) : $pending['name'],
+            'image' => $pending['image'],
+        ];
+
+        // Single-use, including in the event of a database failure.
+        unset($_SESSION[self::PENDING_KEY]);
+        $user = $this->auth->register($data);
+        $userId = $user[$this->auth->params['id']];
+        $this->auth->mark_credential_verified($userId, $pending['provider'], $pending['uid']);
+        $this->auth->audit('oauth.account_created', $userId, ['provider' => $pending['provider']]);
+        return ['status' => 'created', 'user' => $this->auth->establish_session($this->auth->get($userId))];
+    }
+
+    /**
+     * Explicit user choice: prove ownership of an existing account using
+     * its email/password and attach the independently proven OAuth subject.
+     */
+    #[Middleware(RequireRole::class, Auth::ALL)]
+    function postExistingAccount(array $form): array
+    {
+        $this->assertJsonCsrfPost();
+        $pending = $this->requirePendingAccount();
+
+        foreach (array_keys($form) as $field) {
+            if (!in_array($field, ['uid', 'password'], true)) {
+                throw new UserException("Invalid existing-account field `$field`", 400);
+            }
+        }
+        $uid = $form['uid'] ?? null;
+        $password = $form['password'] ?? null;
+        if (!is_string($uid) || trim($uid) === ''
+            || !is_string($password) || $password === '') {
+            throw new UserException('Email and password are required', 400);
+        }
+
+        $existing = $this->auth->get_credential($pending['provider'], $pending['uid']);
+        if ($existing) {
+            unset($_SESSION[self::PENDING_KEY]);
+            throw new UserException('OAuth identity is already associated with an account', 409);
+        }
+
+        // Invalid passwords leave the pending identity available for retry
+        // during its limited lifetime. Successful login regenerates the
+        // session ID; the pending OAuth identity stays in the PHP session.
+        $user = $this->auth->login(trim($uid), $password);
+        $userId = $user[$this->auth->params['id']];
+
+        // Do not allow a competing request to attach this OAuth identity to
+        // a different account. Backend uniqueness constraints also apply.
+        $existing = $this->auth->get_credential($pending['provider'], $pending['uid']);
+        unset($_SESSION[self::PENDING_KEY]);
+        if ($existing) {
+            throw new UserException('OAuth identity is already associated with an account', 409);
+        }
+        $this->auth->update_credential(
+            $userId, $pending['provider'], $pending['uid'], $pending['profile']
+        );
+        $this->auth->mark_credential_verified($userId, $pending['provider'], $pending['uid']);
+        $this->auth->audit('credential.linked', $userId, ['provider' => $pending['provider']]);
+        return ['status' => 'linked', 'user' => $this->auth->user()];
+    }
+
+    /**
+     * Explicitly cancel a pending first-time OAuth sign-in.
+     */
+    #[Middleware(RequireRole::class, Auth::ALL)]
+    function postCancelPendingAccount(): array
+    {
+        $this->assertJsonCsrfPost();
+        $this->requirePendingAccount();
+        unset($_SESSION[self::PENDING_KEY]);
+        return ['status' => 'cancelled'];
+    }
+
+    private function requirePendingAccount(): array
+    {
+        if ($this->auth->check()) {
+            throw new UserException('Finish or cancel the OAuth account choice before signing in', 409);
+        }
+        $pending = $_SESSION[self::PENDING_KEY] ?? null;
+        if (!is_array($pending)
+            || !isset($pending['provider'], $pending['uid'], $pending['created_at'])
+            || !is_string($pending['provider']) || $pending['provider'] === ''
+            || !is_string($pending['uid']) || $pending['uid'] === ''
+            || !is_int($pending['created_at'])
+            || $pending['created_at'] > time()
+            || time() - $pending['created_at'] > self::PENDING_TTL
+            || !array_key_exists($pending['provider'], $this->providers)) {
+            unset($_SESSION[self::PENDING_KEY]);
+            throw new UserException('No valid pending OAuth account choice', 410);
+        }
+        return $pending;
+    }
+
+    private function assertJsonCsrfPost(): void
     {
         if (strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? '')) !== 'POST') {
             throw new UserException('POST is required', 405);
@@ -248,21 +404,27 @@ class OAuthController extends AuthController
             if ($sessionUser !== null) {
                 throw new UserException('Use explicit OAuth account linking', 409);
             }
-            // Unassociated provider identity creates a separate account.
-            // Email matching must never link it to another local user.
-            $data = [
-                'uid' => $uid,
+            // Provider authentication proves an external identity, but the
+            // user must choose whether to create or link a local account.
+            // The OAuth callback must not create any account by itself.
+            $name = is_callable([$resourceOwner, 'getName'])
+                ? $resourceOwner->getName() : null;
+            $image = is_callable([$resourceOwner, 'getAvatar'])
+                ? $resourceOwner->getAvatar()
+                : (is_callable([$resourceOwner, 'getPictureUrl'])
+                    ? $resourceOwner->getPictureUrl() : null);
+            $email = is_callable([$resourceOwner, 'getEmail'])
+                ? $resourceOwner->getEmail() : null;
+            $_SESSION[self::PENDING_KEY] = [
                 'provider' => $provider,
+                'uid' => $uid,
                 'profile' => $profile,
-                'name' => is_callable([$resourceOwner, 'getName'])
-                    ? $resourceOwner->getName() : null,
-                'image' => is_callable([$resourceOwner, 'getAvatar'])
-                    ? $resourceOwner->getAvatar()
-                    : (is_callable([$resourceOwner, 'getPictureUrl'])
-                        ? $resourceOwner->getPictureUrl() : null),
+                'name' => is_string($name) ? $name : null,
+                'image' => is_string($image) ? $image : null,
+                'email_hint' => is_string($email) ? $email : null,
+                'created_at' => time(),
             ];
-            $user = $this->auth->register($data);
-            $this->auth->mark_credential_verified($user[$idField], $provider, $uid);
+            return ['status' => 'pending'];
         }
 
         return $this->auth->establish_session($user);
