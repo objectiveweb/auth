@@ -42,7 +42,7 @@ class OAuthController extends AuthController
         }
 
         if (empty($query['code'])) {
-            $this->startAuthorization($id, $provider, 'login');
+            $this->redirect($this->startAuthorization($id, $provider, 'login'));
             return;
         }
 
@@ -92,14 +92,17 @@ class OAuthController extends AuthController
      * The OAuth callback itself remains GET, as required by OAuth providers.
      */
     #[Middleware(RequireRole::class, Auth::AUTHENTICATED)]
-    function postLink($id, array $form = []): void
+    function postLink($id, array $form = []): array
     {
         if (!$this->auth->revalidate()) {
             throw new \Objectiveweb\Auth\AuthException('Authentication required to link account', 401);
         }
         $this->assertLinkRequest();
         $provider = $this->buildProvider($id);
-        $this->startAuthorization($id, $provider, 'link');
+        // Return the URL for the application's browser to navigate to.
+        // A JSON POST cannot reliably initiate cross-origin navigation by
+        // sending a 302 to fetch/XMLHttpRequest.
+        return ['authorization_url' => $this->startAuthorization($id, $provider, 'link')];
     }
 
     private function assertLinkRequest(): void
@@ -132,7 +135,7 @@ class OAuthController extends AuthController
         return new $classname($config);
     }
 
-    private function startAuthorization($id, object $provider, string $intent): void
+    private function startAuthorization($id, object $provider, string $intent): string
     {
         $verifier = rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
         $challenge = rtrim(strtr(base64_encode(hash('sha256', $verifier, true)), '+/', '-_'), '=');
@@ -161,7 +164,7 @@ class OAuthController extends AuthController
             'principal' => $principal,
             'intent' => $intent,
         ];
-        $this->redirect($authUrl);
+        return $authUrl;
     }
 
     protected function resolveRedirectUri(): string
