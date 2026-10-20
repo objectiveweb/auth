@@ -483,6 +483,37 @@ $oauth = new OAuthController($auth, [
 
 OAuth authorization includes a fresh **PKCE S256** challenge and stores a per-provider authorization flow in the PHP session (`oauth2flows`). The callback requires the matching provider's state, the original initiating session principal, and a state created within the past 10 minutes. The state is consumed before exchanging the code, and the matching PKCE verifier is supplied to the token endpoint. Providers must support PKCE S256. OAuth accounts are linked by the provider's stable subject identifier only; matching email addresses never establishes or links identities.
 
+### Real Google and Facebook provider integration tests
+
+The optional `league/oauth2-google` and `league/oauth2-facebook` packages are
+tested in a dedicated `oauth-real-providers` CI job. These tests instantiate
+the **real League provider classes** and pass a Guzzle mock HTTP transport
+instead of making network calls or using production OAuth secrets. They verify:
+
+- Provider-specific authorization URLs, redirect URIs, scopes, state, and
+  PKCE S256 challenges and token-exchange `code_verifier` parameters.
+- Google OpenID Connect userinfo and Facebook Graph API profile parsing,
+  including avatar/email display hints from real resource-owner classes.
+- Unknown OAuth identities remain pending until the user chooses to
+  create an account or authenticate an existing account for linking.
+- Invalid state is rejected before network access; provider token errors
+  do not create sessions or pending identities.
+
+The provider packages remain optional for library users (the runtime
+`require` dependencies are unchanged). The dedicated job temporarily
+installs them via Composer:
+
+```sh
+composer require --dev 'league/oauth2-google:^4.0' \
+  'league/oauth2-facebook:^2.0' 'guzzlehttp/guzzle:^7.0'
+vendor/bin/phpunit test/RealOAuthProviderTest.php
+```
+
+These are deterministic interoperability tests against real provider
+**implementations**, not live Google/Facebook service checks. Live validation
+still requires developer-owned OAuth applications, registered callback URLs,
+and test users; do not place provider secrets in CI or test fixtures.
+
 ### Resource-owner profile compatibility
 
 The League OAuth2 `ResourceOwnerInterface` requires only `getId()` and
