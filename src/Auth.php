@@ -14,6 +14,9 @@ abstract class Auth
 
     public array $params;
 
+    // Fixed valid bcrypt hash for uniform verification of unknown accounts.
+    private const DUMMY_PASSWORD_HASH = '$2y$10$p7uZwkJNF9lGxXQ8ubwbEe.Ud1mjaN7gTrU59hKvMolizfH0cO0qa';
+
     function __construct(array $params)
     {
         $defaults = [
@@ -279,28 +282,26 @@ abstract class Auth
             if (!$candidateCredential) {
                 continue;
             }
-
             $credential = $candidateCredential;
             $provider = $candidateProvider;
             break;
         }
 
-        if (!$credential) {
-            throw new Auth\UserException('User does not exist', 404);
+        // Use a real bcrypt check for unknown identities and passwordless users
+        // as well as for known users. Do not distinguish invalid usernames,
+        // wrong passwords, or suspended accounts in the public response.
+        $user = $credential ? $this->get($credential['user_id']) : null;
+        $stored = is_array($user) ? ($user[$this->params['password']] ?? null) : null;
+        $hash = is_string($stored) && $stored !== ''
+            ? $stored : self::DUMMY_PASSWORD_HASH;
+        $valid = \password_verify(is_string($password) ? $password : '', $hash);
+        if (!$credential || !$valid || !$this->is_active($user)) {
+            throw new Auth\AuthException('Invalid credentials', 401);
         }
 
-        $user = $this->get($credential['user_id']);
-
-        if (\password_verify($password, $user[$this->params['password']])) {
-            $user = $this->establish_session($user);
-
-            // TODO add login ip
-            $this->update_credential($user[$this->params['id']], (string) $provider, $uid, null);
-
-            return $user;
-        } else {
-            throw new Auth\AuthException('Password invalid', 400);
-        }
+        $user = $this->establish_session($user);
+        $this->update_credential($user[$this->params['id']], (string) $provider, $uid, null);
+        return $user;
     }
 
     /**
