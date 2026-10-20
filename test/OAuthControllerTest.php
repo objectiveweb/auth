@@ -129,6 +129,160 @@ class OAuthControllerTest extends TestCase
         $this->assertArrayNotHasKey('profile', $choice);
     }
 
+    public function testMinimalLeagueResourceOwnerDoesNotRequireOptionalMethods(): void
+    {
+        $auth = new OAuthTrackingBasicAuth([], ['token' => 'token']);
+        OAuthTestProvider::$resourceOwner = new class implements \League\OAuth2\Client\Provider\ResourceOwnerInterface {
+            public function getId(): string { return 'minimal-provider-subject'; }
+            public function toArray(): array { return ['id' => 'minimal-provider-subject']; }
+        };
+
+        $controller = $this->testController($auth);
+        $controller->get('test', []);
+        $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+
+        $pending = $controller->getPendingAccount();
+        $this->assertSame('account_choice_required', $pending['status']);
+        $this->assertNull($pending['name']);
+        $this->assertNull($pending['image'] ?? null);
+        $this->assertNull($pending['email_hint']);
+        $this->assertFalse($auth->get_credential('test', 'minimal-provider-subject'));
+
+        $this->withLinkHeaders($auth);
+        $created = $controller->postCreateAccount();
+        $this->assertSame('created', $created['status']);
+        $this->assertSame(
+            $created['user']['id'],
+            $auth->get_credential('test', 'minimal-provider-subject')['user_id']
+        );
+        $this->assertNotEmpty($auth->get_credential('test', 'minimal-provider-subject')['verified_at']);
+    }
+
+    public function testLeagueProfileArraySuppliesSafeNameAvatarAndEmailHints(): void
+    {
+        $auth = new OAuthTrackingBasicAuth([], ['token' => 'token']);
+        OAuthTestProvider::$resourceOwner = new class implements \League\OAuth2\Client\Provider\ResourceOwnerInterface {
+            public function getId(): int { return 92735; }
+            public function toArray(): array
+            {
+                return [
+                    'name' => '  Profile Name  ',
+                    'avatar_url' => 'https://example.com/avatar.png',
+                    'email' => 'profile@example.com',
+                ];
+            }
+        };
+
+        $controller = $this->testController($auth);
+        $controller->get('test', []);
+        $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+        $pending = $controller->getPendingAccount();
+        $this->assertSame('Profile Name', $pending['name']);
+        $this->assertSame('profile@example.com', $pending['email_hint']);
+        $this->assertSame('https://example.com/avatar.png', $_SESSION['oauth2pending']['image']);
+        $this->assertArrayNotHasKey('uid', $pending);
+
+        $this->withLinkHeaders($auth);
+        $result = $controller->postCreateAccount();
+        $this->assertSame('Profile Name', $result['user']['name']);
+        $this->assertSame('https://example.com/avatar.png', $result['user']['image']);
+        $this->assertNotFalse($auth->get_credential('test', '92735'));
+    }
+
+    public function testNestedPictureAndSplitNameProfileFallbacks(): void
+    {
+        $auth = new BasicAuth([], ['token' => 'token']);
+        OAuthTestProvider::$resourceOwner = new class implements \League\OAuth2\Client\Provider\ResourceOwnerInterface {
+            public function getId(): string { return 'nested-fields'; }
+            public function toArray(): array
+            {
+                return [
+                    'given_name' => ' Alice ',
+                    'family_name' => 'Smith',
+                    'picture' => ['data' => ['url' => 'https://cdn.example.com/photo.jpg']],
+                    'email_address' => 'alice@example.com',
+                ];
+            }
+        };
+        $controller = $this->testController($auth);
+        $controller->get('test', []);
+        $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+
+        $pending = $controller->getPendingAccount();
+        $this->assertSame('Alice Smith', $pending['name']);
+        $this->assertSame('alice@example.com', $pending['email_hint']);
+        $this->assertSame('https://cdn.example.com/photo.jpg', $_SESSION['oauth2pending']['image']);
+    }
+
+    public function testMalformedOrThrowingOptionalGettersSafelyFallBackToProfile(): void
+    {
+        $auth = new BasicAuth([], ['token' => 'token']);
+        OAuthTestProvider::$resourceOwner = new class implements \League\OAuth2\Client\Provider\ResourceOwnerInterface {
+            public function getId(): string { return 'broken-optional-fields'; }
+            public function getName(): string { throw new \RuntimeException('Name unavailable'); }
+            public function getAvatar(): array { return ['unexpected' => 'value']; }
+            public function getPictureUrl(): string { throw new \RuntimeException('Picture unavailable'); }
+            public function getEmail(): array { return ['bad' => 'value']; }
+            public function toArray(): array
+            {
+                return [
+                    'display_name' => '  Resilient User  ',
+                    'picture_url' => 'javascript:alert(1)',
+                    'image_url' => 'https://images.example.com/photo.jpg',
+                    'mail' => ' valid@example.com ',
+                ];
+            }
+        };
+
+        $controller = $this->testController($auth);
+        $controller->get('test', []);
+        $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+
+        $pending = $controller->getPendingAccount();
+        $this->assertSame('Resilient User', $pending['name']);
+        $this->assertSame('valid@example.com', $pending['email_hint']);
+        $this->assertSame('https://images.example.com/photo.jpg', $_SESSION['oauth2pending']['image']);
+    }
+
+    public function testUnsafeAvatarAndInvalidEmailHintsAreIgnored(): void
+    {
+        $auth = new BasicAuth([], ['token' => 'token']);
+        OAuthTestProvider::$resourceOwner = new class implements \League\OAuth2\Client\Provider\ResourceOwnerInterface {
+            public function getId(): string { return 'unsafe-fields'; }
+            public function toArray(): array
+            {
+                return [
+                    'name' => ['not' => 'text'],
+                    'picture' => 'data:image/svg+xml;base64,PHN2Zz4=',
+                    'avatar_url' => 'javascript:alert(1)',
+                    'email' => 'not-an-email',
+                ];
+            }
+        };
+
+        $controller = $this->testController($auth);
+        $controller->get('test', []);
+        $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+
+        $pending = $controller->getPendingAccount();
+        $this->assertNull($pending['name']);
+        $this->assertNull($pending['email_hint']);
+        $this->assertNull($_SESSION['oauth2pending']['image']);
+    }
+
+    public function testInvalidProviderSubjectTypeIsRejected(): void
+    {
+        $auth = new BasicAuth([], ['token' => 'token']);
+        $controller = $this->testController($auth);
+        $owner = new class implements \League\OAuth2\Client\Provider\ResourceOwnerInterface {
+            public function getId(): array { return ['not' => 'an id']; }
+            public function toArray(): array { return []; }
+        };
+        $this->expectException(AuthException::class);
+        $this->expectExceptionCode(401);
+        $this->invokeOAuthLogin($controller, 'test', $owner);
+    }
+
     public function testFirstTimeOAuthCanExplicitlyCreateNewAccount(): void
     {
         $auth = new OAuthTrackingBasicAuth([], ['token' => 'token']);
