@@ -449,7 +449,7 @@ Anonymous password-recovery requests intentionally return the same empty success
 
 ## OAuth controller
 
-Configure OAuth providers by provider name. Set an explicit `redirectUri` in production so callback URLs do not depend on request/proxy headers:
+Configure OAuth providers by provider name. **Every provider must have an explicitly configured, trusted `redirectUri`** that exactly matches its callback URL registered at the provider:
 
 ```php
 use Objectiveweb\Auth\Controller\OAuthController;
@@ -463,7 +463,23 @@ $oauth = new OAuthController($auth, [
 ]);
 ```
 
-If `redirectUri` is omitted, the controller derives it from the current request for development/legacy setups. **Use an explicit trusted redirect URI in production:** request-derived host and proxy headers are not an authorization boundary.
+`redirectUri` is **required**, including in development. Missing or malformed values fail immediately before OAuth authorization or token exchange begins. The controller never reads `HTTP_HOST`, `HTTP_X_FORWARDED_PROTO`, the current request scheme, or request paths to construct a callback URL. The configured URL is passed unchanged to the OAuth client.
+
+Only absolute **HTTPS** callback URLs are accepted in production. **HTTP** is permitted solely for the loopback hosts `localhost`, `127.0.0.1`, and `[::1]` for local development; even local URLs must be explicitly configured. Relative URLs, credentials embedded in URLs, URL fragments, control characters, and other schemes are rejected. Static query parameters can be used if the provider has registered the exact callback URL.
+
+For example, a local development configuration may use:
+
+```php
+$oauth = new OAuthController($auth, [
+    'google' => [
+        'clientId' => getenv('GOOGLE_CLIENT_ID'),
+        'clientSecret' => getenv('GOOGLE_CLIENT_SECRET'),
+        'redirectUri' => 'http://localhost:8080/auth/oauth/google',
+    ],
+]);
+```
+
+**Breaking behavior change in v0.2.0:** applications that previously omitted `redirectUri` must supply one for every enabled OAuth provider. Do not derive it from user input or untrusted forwarding headers in application code. This policy applies to both ordinary OAuth login and explicit account linking.
 
 OAuth authorization includes a fresh **PKCE S256** challenge and stores a per-provider authorization flow in the PHP session (`oauth2flows`). The callback requires the matching provider's state, the original initiating session principal, and a state created within the past 10 minutes. The state is consumed before exchanging the code, and the matching PKCE verifier is supplied to the token endpoint. Providers must support PKCE S256. OAuth accounts are linked by the provider's stable subject identifier only; matching email addresses never establishes or links identities.
 
