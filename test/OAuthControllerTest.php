@@ -463,6 +463,40 @@ class OAuthControllerTest extends TestCase
     }
 
 
+    public function testExistingAccountLinkFailureDoesNotAuthenticateBrowser(): void
+    {
+        $auth = new class([], ['token' => 'token']) extends OAuthTrackingBasicAuth {
+            public function mark_credential_verified($userid, string $provider, string $uid): void
+            {
+                if ($provider === 'test') {
+                    throw new \RuntimeException('Simulated OAuth credential verification failure');
+                }
+                parent::mark_credential_verified($userid, $provider, $uid);
+            }
+        };
+        $auth->register('owner@example.com', 'local-secret');
+        OAuthTestProvider::$resourceOwner = $this->resourceOwner('pending-oauth-subject');
+        $controller = $this->testController($auth);
+        $controller->get('test', []);
+        $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+        $this->withLinkHeaders($auth);
+
+        try {
+            $controller->postExistingAccount([
+                'uid' => 'owner@example.com',
+                'password' => 'local-secret',
+            ]);
+            $this->fail('Expected OAuth credential verification to fail');
+        } catch (\RuntimeException $e) {
+            $this->assertSame('Simulated OAuth credential verification failure', $e->getMessage());
+        }
+
+        $this->assertFalse($auth->check());
+        $this->assertFalse($auth->sessionRegenerated);
+        $this->assertArrayNotHasKey('ow_auth', $_SESSION);
+        $this->assertArrayNotHasKey('oauth2pending', $_SESSION);
+    }
+
     public function testPendingAccountCannotBeCreatedWithoutExplicitChoice(): void
     {
         $auth = new BasicAuth([], ['token' => 'token']);
