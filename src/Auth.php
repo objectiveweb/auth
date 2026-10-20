@@ -273,7 +273,14 @@ abstract class Auth
      * @throws Auth\UserException
      * @throws Auth\AuthException
      */
-    public function &login($uid, $password)
+    /**
+     * Validate local login credentials without changing the authenticated session
+     * or recording a login. OAuth account linking uses this before committing
+     * the external identity to the account.
+     *
+     * @return array{user: array, provider: string}
+     */
+    public function authenticate($uid, $password): array
     {
         $credential = false;
         $provider = null;
@@ -287,9 +294,8 @@ abstract class Auth
             break;
         }
 
-        // Use a real bcrypt check for unknown identities and passwordless users
-        // as well as for known users. Do not distinguish invalid usernames,
-        // wrong passwords, or suspended accounts in the public response.
+        // Verify against a dummy hash for unknown or passwordless accounts.
+        // Invalid usernames, passwords and suspended users share one error.
         $user = $credential ? $this->get($credential['user_id']) : null;
         $stored = is_array($user) ? ($user[$this->params['password']] ?? null) : null;
         $hash = is_string($stored) && $stored !== ''
@@ -299,8 +305,16 @@ abstract class Auth
             throw new Auth\AuthException('Invalid credentials', 401);
         }
 
-        $user = $this->establish_session($user);
-        $this->update_credential($user[$this->params['id']], (string) $provider, $uid, null);
+        return ['user' => $user, 'provider' => (string) $provider];
+    }
+
+    public function &login($uid, $password)
+    {
+        $authenticated = $this->authenticate($uid, $password);
+        $user = $this->establish_session($authenticated['user']);
+        $this->update_credential(
+            $user[$this->params['id']], $authenticated['provider'], $uid, null
+        );
         return $user;
     }
 
