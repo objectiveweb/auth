@@ -778,13 +778,51 @@ class DBAuthSqliteTest extends TestCase
     public function testUpdateRolesReplacesAssignments(): void
     {
         $user = self::$auth->register('roles@example.com', 'secret', [
+            'name' => 'Before',
             'roles' => ['partner'],
         ]);
 
-        self::$auth->update($user['id'], ['roles' => ['operator', 'admin']]);
+        self::$auth->update($user['id'], ['name' => 'After', 'roles' => ['operator', 'admin']]);
         $reloaded = self::$auth->get($user['id']);
 
+        $this->assertSame('After', $reloaded['name']);
         $this->assertSame(['admin', 'operator'], $reloaded['roles']);
+    }
+
+    public function testUpdateRollsBackUserFieldsRoleDefinitionsAndMembershipsOnFailure(): void
+    {
+        $user = self::$auth->register('rollback-roles@example.com', 'secret', [
+            'name' => 'Before',
+            'roles' => ['partner'],
+        ]);
+
+        // Fail only during membership insertion, after the user update,
+        // new role creation and old membership deletion have run.
+        self::$db->query(
+            "CREATE TRIGGER auth_fail_role_assignment
+             BEFORE INSERT ON auth_user_role
+             BEGIN
+                 SELECT RAISE(ABORT, 'forced role synchronization failure');
+             END"
+        )->exec();
+
+        $failure = null;
+        try {
+            self::$auth->update($user['id'], [
+                'name' => 'After',
+                'roles' => ['operator'],
+            ]);
+        } catch (\Throwable $exception) {
+            $failure = $exception;
+        } finally {
+            self::$db->query('DROP TRIGGER auth_fail_role_assignment')->exec();
+        }
+
+        $this->assertNotNull($failure, 'A failed role insertion must abort the update');
+        $reloaded = self::$auth->get($user['id']);
+        $this->assertSame('Before', $reloaded['name']);
+        $this->assertSame(['partner'], $reloaded['roles']);
+        $this->assertSame(['partner'], self::$auth->get_roles());
     }
 
     public function testGetUsersByRoleReturnsOnlyUsersWithMatchingRole(): void

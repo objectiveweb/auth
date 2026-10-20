@@ -458,21 +458,24 @@ class DBAuth extends \Objectiveweb\Auth
             throw new \InvalidArgumentException('Role sync requested but role tables are disabled');
         }
 
-        if (!empty($data)) {
-            foreach ($data as $k => $v) {
-                if (is_array($v)) {
-                    $data[$k] = json_encode($v);
+        // User fields, role definitions and memberships must commit or roll back together.
+        $this->db->transaction(function () use ($column, $user_id, $key, $data, $syncRoles, $roles): void {
+            if (!empty($data)) {
+                foreach ($data as $k => $v) {
+                    if (is_array($v)) {
+                        $data[$k] = json_encode($v);
+                    }
                 }
+
+                $this->userTable->update([$column => $user_id], $data);
             }
 
-            $this->userTable->update([$column => $user_id], $data);
-        }
-
-        if ($syncRoles) {
-            $target = $this->get($user_id, $key);
-            $this->resolveRoleIds($roles);
-            $this->syncUserRoles($target[$this->params['id']], $roles);
-        }
+            if ($syncRoles) {
+                $target = $this->get($user_id, $key);
+                $this->resolveRoleIds($roles);
+                $this->syncUserRoles($target[$this->params['id']], $roles);
+            }
+        });
     }
 
     public function delete($user_id)
