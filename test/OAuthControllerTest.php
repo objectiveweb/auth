@@ -236,7 +236,7 @@ class OAuthControllerTest extends TestCase
             $controller->postCreateAccount();
             $this->fail('Restricted account creation succeeded');
         } catch (\Objectiveweb\Auth\AuthException $e) {
-            $this->assertSame(403, $e->getCode());
+            $this->assertSame(401, $e->getCode());
         }
         $this->assertFalse($auth->get_credential('test', 'restricted-id'));
     }
