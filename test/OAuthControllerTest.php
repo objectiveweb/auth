@@ -189,6 +189,166 @@ class OAuthControllerTest extends TestCase
     }
 
 
+    public function testPendingAccountCannotBeCreatedWithoutExplicitChoice(): void
+    {
+        $auth = new BasicAuth([], ['token' => 'token']);
+        OAuthTestProvider::$resourceOwner = $this->resourceOwner('new-id');
+        $controller = $this->testController($auth);
+
+        $controller->get('test', []);
+        $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+        $this->assertFalse($auth->get_credential('test', 'new-id'));
+        $this->assertFalse($auth->check());
+
+        $_SERVER['REQUEST_METHOD'] = 'POST';
+        $_SERVER['CONTENT_TYPE'] = 'application/json';
+        try {
+            $controller->postCreateAccount();
+            $this->fail('Creating without CSRF token succeeded');
+        } catch (\Objectiveweb\Auth\UserException $e) {
+            $this->assertSame(403, $e->getCode());
+        }
+        $this->assertFalse($auth->get_credential('test', 'new-id'));
+
+        $this->withLinkHeaders($auth);
+        try {
+            $controller->postCreateAccount(['provider' => 'local']);
+            $this->fail('Provider injection during OAuth account creation succeeded');
+        } catch (\Objectiveweb\Auth\UserException $e) {
+            $this->assertSame(400, $e->getCode());
+        }
+        $this->assertArrayHasKey('oauth2pending', $_SESSION);
+    }
+
+    public function testPendingAccountCreationHonorsRegistrationPolicy(): void
+    {
+        $auth = new BasicAuth([], [
+            'token' => 'token',
+            'register_scope' => \Objectiveweb\Auth::AUTHENTICATED,
+        ]);
+        OAuthTestProvider::$resourceOwner = $this->resourceOwner('restricted-id');
+        $controller = $this->testController($auth);
+        $controller->get('test', []);
+        $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+        $this->withLinkHeaders($auth);
+
+        try {
+            $controller->postCreateAccount();
+            $this->fail('Restricted account creation succeeded');
+        } catch (\Objectiveweb\Auth\AuthException $e) {
+            $this->assertSame(403, $e->getCode());
+        }
+        $this->assertFalse($auth->get_credential('test', 'restricted-id'));
+    }
+
+    public function testPendingAccountExpiresAndIsRemoved(): void
+    {
+        $auth = new BasicAuth([], ['token' => 'token']);
+        OAuthTestProvider::$resourceOwner = $this->resourceOwner('expiring-id');
+        $controller = $this->testController($auth);
+        $controller->get('test', []);
+        $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+        $_SESSION['oauth2pending']['created_at'] = time() - 601;
+
+        try {
+            $controller->getPendingAccount();
+            $this->fail('Expired pending account still available');
+        } catch (\Objectiveweb\Auth\UserException $e) {
+            $this->assertSame(410, $e->getCode());
+        }
+        $this->assertArrayNotHasKey('oauth2pending', $_SESSION);
+        $this->assertFalse($auth->get_credential('test', 'expiring-id'));
+    }
+
+    public function testAccountChoiceCannotBeReplayedOrUsedAfterCancellation(): void
+    {
+        $auth = new BasicAuth([], ['token' => 'token']);
+        OAuthTestProvider::$resourceOwner = $this->resourceOwner('choice-id');
+        $controller = $this->testController($auth);
+        $controller->get('test', []);
+        $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+        $this->withLinkHeaders($auth);
+        $this->assertSame('cancelled', $controller->postCancelPendingAccount()['status']);
+        try {
+            $controller->postCreateAccount();
+            $this->fail('Cancelled account choice still usable');
+        } catch (\Objectiveweb\Auth\UserException $e) {
+            $this->assertSame(410, $e->getCode());
+        }
+
+        $controller->get('test', []);
+        $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+        $result = $controller->postCreateAccount();
+        $this->assertSame('created', $result['status']);
+        $auth->logout();
+        try {
+            $controller->postExistingAccount(['uid' => 'other@example.com', 'password' => 'secret']);
+            $this->fail('A consumed OAuth proof was reused');
+        } catch (\Objectiveweb\Auth\UserException $e) {
+            $this->assertSame(410, $e->getCode());
+        }
+    }
+
+    public function testAccountChoiceRejectsPreviouslyLinkedProviderIdentity(): void
+    {
+        $auth = new BasicAuth([], ['token' => 'token']);
+        $owner = $auth->register('existing@example.com', 'password');
+        OAuthTestProvider::$resourceOwner = $this->resourceOwner('race-id');
+        $controller = $this->testController($auth);
+        $controller->get('test', []);
+        $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+        // A different request associates the identity while the choice is pending.
+        $auth->create_credential($owner['id'], 'test', 'race-id');
+        $auth->mark_credential_verified($owner['id'], 'test', 'race-id');
+        $this->withLinkHeaders($auth);
+        try {
+            $controller->postCreateAccount();
+            $this->fail('Duplicate OAuth identity was accepted');
+        } catch (\Objectiveweb\Auth\UserException $e) {
+            $this->assertSame(409, $e->getCode());
+        }
+        $this->assertSame($owner['id'], $auth->get_credential('test', 'race-id')['user_id']);
+        $this->assertArrayNotHasKey('oauth2pending', $_SESSION);
+    }
+
+    public function testExistingAccountChoiceRejectsInvalidPayloadAndUntrustedMethods(): void
+    {
+        $auth = new BasicAuth([], ['token' => 'token']);
+        $auth->register('existing@example.com', 'secret');
+        OAuthTestProvider::$resourceOwner = $this->resourceOwner('pending-id');
+        $controller = $this->testController($auth);
+        $controller->get('test', []);
+        $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+        $this->withLinkHeaders($auth);
+        $_SERVER['REQUEST_METHOD'] = 'GET';
+        try {
+            $controller->postExistingAccount(['uid' => 'existing@example.com', 'password' => 'secret']);
+            $this->fail('GET linked a provider credential');
+        } catch (\Objectiveweb\Auth\UserException $e) {
+            $this->assertSame(405, $e->getCode());
+        }
+        $_SERVER['REQUEST_METHOD'] = 'POST';
+        try {
+            $controller->postExistingAccount([
+                'uid' => 'existing@example.com',
+                'password' => 'secret',
+                'provider' => 'test',
+            ]);
+            $this->fail('Provider injection accepted in existing-account choice');
+        } catch (\Objectiveweb\Auth\UserException $e) {
+            $this->assertSame(400, $e->getCode());
+        }
+        $this->assertFalse($auth->get_credential('test', 'pending-id'));
+        $this->assertArrayHasKey('oauth2pending', $_SESSION);
+    }
+
+    public function testPendingChoiceRedirectRejectsExternalUrl(): void
+    {
+        $this->expectException(\Objectiveweb\Auth\UserException::class);
+        $this->expectExceptionCode(400);
+        $this->testController(new BasicAuth(), '//attacker.example/receive');
+    }
+
     public function testUnverifiedOAuthCredentialCannotBeUsedToLogInAnotherAccount(): void
     {
         $auth = new OAuthTrackingBasicAuth([], ['token' => 'token']);
