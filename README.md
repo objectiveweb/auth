@@ -370,7 +370,8 @@ $auth = new DBAuth($db, [
             'subject_key' => 'user_id',
             'target_key' => 'target_user_id',
             'ability_key' => 'ability',
-            'target_is_user' => true, // Also clean target-user rows on deletion
+            'target_is_user' => true, // Also clean target-user rows when Auth owns this relation
+            'auth_owned' => true,     // Explicit opt-in: Auth may clean this table on user deletion
         ],
         'item' => [
             'table' => 'item_users',  // Application-owned relation table
@@ -389,6 +390,8 @@ $itemIds = $auth->user_can('manage', 'item'); // Accessible item IDs
 ```
 
 Each permission relation requires `table`, `subject_key`, `target_key` and either `ability_key` or `role_key` together with `role_abilities` (a role-to-ability map). `eager` may be `true` or a `DB::select()` options array such as `['order' => 'item_id DESC']`. Eager relation rows remain scoped to the current subject user.
+
+**Deletion ownership is opt-in.** `DBAuth::delete()` removes rows from a configured relation table only when `auth_owned => true` is explicitly set (for example, the bundled `delegations` table). When enabled, it cleans rows with the deleted user as `subject_key`, plus `target_key` when `target_is_user => true`. Merely configuring a relation for authorization—even with `target_is_user => true`—does not transfer ownership of application tables to Auth. Never set `auth_owned` on application-owned association tables; use the application's own deletion logic, foreign-key cascades or `deletion_guard_callback` instead.
 
 #### Application-owned user context
 
@@ -420,7 +423,7 @@ $venueIds = $auth->user()['context']['venues'];
 
 Session context is not implicitly added to `get()` or `query()` results; those remain user-record APIs. `AuthController::index()` returns the authenticated session principal, including its context. If the callback is omitted, Auth does not add a context field.
 
-**Migration from `managed_relations` (breaking change for 0.2.0):** remove that parameter; move `get_managed_relations()` and `sync_managed_relations()` callers into your application's user service; expose venue assignments through application-specific endpoints rather than generic `UserController` create/update. The generic Auth controller now rejects `managed_relations` request fields instead of silently losing assignments, and it no longer includes them in user-detail responses. `DBAuth::delete()` no longer cleans application association tables: arrange cleanup using application transactions/foreign-key cascades and, where necessary, `deletion_guard_callback`.
+**Migration from `managed_relations` (breaking change for 0.2.0):** remove that parameter; move `get_managed_relations()` and `sync_managed_relations()` callers into your application's user service; expose venue assignments through application-specific endpoints rather than generic `UserController` create/update. The generic Auth controller now rejects `managed_relations` request fields instead of silently losing assignments, and it no longer includes them in user-detail responses. `DBAuth::delete()` cleans only explicitly `auth_owned` relations and never automatically cleans application association tables: arrange their cleanup using application transactions/foreign-key cascades and, where necessary, `deletion_guard_callback`.
 
 ### `BasicAuth`
 

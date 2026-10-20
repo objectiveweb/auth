@@ -103,7 +103,7 @@ If you preserve numeric `id` values, also reset the auto-increment/identity sequ
 - Replace HAL queries such as `$result['_embedded']['ow_auth']` with iteration over a `Collection` and `$collection->total()` / `$collection->contentRange()`.
 - Replace old `PasswordMismatchException` handlers with `AuthException` and a generic 401 response for invalid password login.
 - Update any direct password/credential/token calls to use **numeric user IDs** and the new `(provider, uid)` credential APIs. `passwd()` is a trusted service/admin operation; use `postPassword()` for end-user password changes.
-- If using `managed_relations` in earlier development builds, migrate their reads/writes/validation to application services and use `user_context_callback` for refreshed session context. Auth does not automatically persist or remove application-owned association rows.
+- If using `managed_relations` in earlier development builds, migrate their reads/writes/validation to application services and use `user_context_callback` for refreshed session context. Auth does not automatically persist or remove application-owned association rows. A configured `relations` entry opts into deletion cleanup only when explicitly marked `auth_owned => true` (for genuinely Auth-owned tables such as bundled `delegations`); do not enable it for application tables.
 
 ## 5. Deploy OAuth changes deliberately
 

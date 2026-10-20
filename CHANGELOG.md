@@ -29,7 +29,7 @@ All notable changes to `objectiveweb/auth` are documented here. This project fol
 - User-facing password changes require the existing password, a session-bound `X-CSRF-Token`, and a JSON request; public registration is restricted to local credentials and safe profile fields.
 - OAuth callbacks require a **configured, trusted `redirectUri`** (HTTPS, or explicitly configured HTTP loopback for local development), no longer inferred from Host/proxy request headers.
 - OAuth provider-resource-owner display names, emails and avatars are optional hints with safe fallbacks; matching email addresses do **not** link accounts.
-- User-managed application associations (`managed_relations`) now belong to application services. Use `user_context_callback` to expose current assignments to the authenticated session.
+- User-managed application associations (`managed_relations`) now belong to application services. Use `user_context_callback` to expose current assignments to the authenticated session. User deletion cleans only explicitly `auth_owned` authorization relation tables; application-owned relation tables are never implicitly modified.
 - Project testing/release verification moved from Travis to GitHub Actions; Composer metadata and support URL updated.
 
 ### Security fixes

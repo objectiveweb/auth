@@ -506,7 +506,11 @@ class DBAuth extends \Objectiveweb\Auth
                 );
             }
             foreach ((array) $this->params['relations'] as $relation) {
-                if (!is_array($relation) || empty($relation['table'])) {
+                // A relation used for authorization is not necessarily owned by Auth.
+                // Only explicitly Auth-owned relation tables may be cleaned up here.
+                if (!is_array($relation)
+                    || ($relation['auth_owned'] ?? false) !== true
+                    || empty($relation['table'])) {
                     continue;
                 }
                 if (!empty($relation['subject_key'])) {

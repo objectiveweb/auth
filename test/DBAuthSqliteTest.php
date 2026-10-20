@@ -122,6 +122,7 @@ class DBAuthSqliteTest extends TestCase
                     'target_key' => 'target_user_id',
                     'ability_key' => 'ability',
                     'target_is_user' => true,
+                    'auth_owned' => true,
                 ],
                 'item' => [
                     'table' => 'item_users',
@@ -1289,15 +1290,66 @@ class DBAuthSqliteTest extends TestCase
         $actor = self::$auth->register('actor@example.com', 'secret');
         $target = self::$auth->register('target@example.com', 'secret');
         self::$db->insert('managed_items', ['user_id' => $target['id'], 'item_id' => 3]);
+        self::$db->insert('item_users', [
+            'user_id' => $target['id'],
+            'item_id' => 3,
+            'ability' => 'manage',
+        ]);
 
+        // Auth-owned delegation cleanup covers both the subject and target.
         self::$db->insert('user_delegations', [
             'user_id' => $actor['id'],
             'target_user_id' => $target['id'],
             'ability' => 'manage',
         ]);
+        self::$db->insert('user_delegations', [
+            'user_id' => $target['id'],
+            'target_user_id' => $actor['id'],
+            'ability' => 'view',
+        ]);
+
         self::$auth->delete($target['id']);
         $this->assertSame(0, self::$db->count('user_delegations', []));
         $this->assertSame(1, self::$db->count('managed_items', []));
+        $this->assertSame(1, self::$db->count('item_users', []));
+    }
+
+    public function testUserDeletionDoesNotCleanUnownedRelationsEvenWhenTargetIsUser(): void
+    {
+        $auth = new DBAuth(self::$db, [
+            'table' => 'auth_user',
+            'credentials_table' => 'auth_credentials',
+            'created' => 'created',
+            'roles_table' => 'auth_role',
+            'user_roles_table' => 'auth_user_role',
+            'relations' => [
+                'user' => [
+                    'table' => 'user_delegations',
+                    'subject_key' => 'user_id',
+                    'target_key' => 'target_user_id',
+                    'ability_key' => 'ability',
+                    'target_is_user' => true,
+                    // No auth_owned flag: application remains responsible.
+                ],
+            ],
+        ]);
+
+        $actor = $auth->register('actor@example.com', 'secret');
+        $target = $auth->register('target@example.com', 'secret');
+        self::$db->insert('user_delegations', [
+            'user_id' => $actor['id'],
+            'target_user_id' => $target['id'],
+            'ability' => 'manage',
+        ]);
+        self::$db->insert('user_delegations', [
+            'user_id' => $target['id'],
+            'target_user_id' => $actor['id'],
+            'ability' => 'view',
+        ]);
+
+        $this->assertTrue($auth->delete($target['id']));
+        $this->assertSame(2, self::$db->count('user_delegations', []));
+        $this->assertFalse($auth->get_credential('local', 'target@example.com'));
     }
 
     public function testDbAuthSessionContextReloadsApplicationAssignments(): void
