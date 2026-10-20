@@ -164,7 +164,8 @@ class DBAuthSqliteTest extends TestCase
 
     public function testInvalidLogin(): void
     {
-        $this->expectException(UserException::class);
+        $this->expectException(AuthException::class);
+        $this->expectExceptionCode(401);
         self::$auth->login('nouser@example.com', 'pass');
     }
 
@@ -630,7 +631,7 @@ class DBAuthSqliteTest extends TestCase
                 ]);
                 $this->fail('Incorrect current password was accepted');
             } catch (AuthException $exception) {
-                $this->assertSame(403, $exception->getCode());
+                $this->assertSame(401, $exception->getCode());
             }
 
             $this->assertTrue(password_verify('old-secret', self::$auth->get($user['id'])['password']));
@@ -713,7 +714,8 @@ class DBAuthSqliteTest extends TestCase
 
     public function testDelete(): void
     {
-        $this->expectException(UserException::class);
+        $this->expectException(AuthException::class);
+        $this->expectExceptionCode(401);
 
         self::$auth->register('alice@example.com', 'secret');
         $account = self::$auth->get_credential('local', 'alice@example.com');
@@ -1058,7 +1060,7 @@ class DBAuthSqliteTest extends TestCase
         $this->assertFalse(self::$auth->check());
 
         $this->expectException(AuthException::class);
-        $this->expectExceptionCode(403);
+        $this->expectExceptionCode(401);
         self::$auth->login('suspended@example.com', 'secret');
     }
 
