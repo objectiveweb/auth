@@ -36,6 +36,8 @@ class OAuthControllerTest extends TestCase
         $_SESSION = [];
         $_SERVER = [];
         OAuthTestProvider::$lastConfig = [];
+        OAuthTestProvider::$lastAuthorizationOptions = [];
+        OAuthTestProvider::$lastTokenOptions = [];
         OAuthTestProvider::$resourceOwner = null;
         OAuthTestProvider::$state = 'test-oauth-state';
     }
@@ -64,7 +66,16 @@ class OAuthControllerTest extends TestCase
         $controller->get('test', []);
 
         $this->assertSame('https://app.example/oauth/test', OAuthTestProvider::$lastConfig['redirectUri']);
-        $this->assertSame('test-oauth-state', $_SESSION['oauth2state']);
+        $flow = $_SESSION['oauth2flows']['test'];
+        $this->assertSame('test-oauth-state', $flow['state']);
+        $this->assertNull($flow['principal']);
+        $this->assertGreaterThanOrEqual(43, strlen($flow['code_verifier']));
+        $this->assertSame('S256', OAuthTestProvider::$lastAuthorizationOptions['code_challenge_method']);
+        $expectedChallenge = rtrim(
+            strtr(base64_encode(hash('sha256', $flow['code_verifier'], true)), '+/', '-_'),
+            '='
+        );
+        $this->assertSame($expectedChallenge, OAuthTestProvider::$lastAuthorizationOptions['code_challenge']);
         $this->assertSame('https://oauth.example/authorize', $controller->redirectedTo);
     }
 
@@ -99,8 +110,6 @@ class OAuthControllerTest extends TestCase
         OAuthTestProvider::$resourceOwner = $this->resourceOwner(
             'provider-user-id', 'linked@example.com'
         );
-        $_SESSION['oauth2state'] = 'test-oauth-state';
-
         $controller = new OAuthTestController($auth, [
             'test' => [
                 'clientId' => 'client-id',
@@ -108,9 +117,15 @@ class OAuthControllerTest extends TestCase
                 'redirectUri' => 'https://app.example/oauth/test',
             ],
         ]);
+        $controller->get('test', []);
         $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
 
-        $this->assertArrayNotHasKey('oauth2state', $_SESSION);
+        $this->assertArrayNotHasKey('test', $_SESSION['oauth2flows']);
+        $this->assertSame(
+            $_SESSION['oauth2flows']['test']['code_verifier'] ?? null,
+            null
+        );
+        $this->assertNotEmpty(OAuthTestProvider::$lastTokenOptions['code_verifier']);
         $this->assertSame('/', $controller->redirectedTo);
         $this->assertTrue($auth->sessionRegenerated);
         $this->assertNotSame($existing['id'], $auth->user()['id']);
@@ -165,8 +180,6 @@ class OAuthControllerTest extends TestCase
     public function testInvalidOAuthStateIsCleared(): void
     {
         $auth = new BasicAuth([], ['token' => 'token']);
-        $_SESSION['oauth2state'] = 'expected-state';
-
         $controller = new OAuthTestController($auth, [
             'test' => [
                 'clientId' => 'client-id',
@@ -175,6 +188,7 @@ class OAuthControllerTest extends TestCase
             ],
         ]);
 
+        $controller->get('test', []);
         try {
             $controller->get('test', [
                 'code' => 'oauth-code',
@@ -185,7 +199,94 @@ class OAuthControllerTest extends TestCase
             $this->assertSame(406, $exception->getCode());
         }
 
-        $this->assertArrayNotHasKey('oauth2state', $_SESSION);
+        $this->assertArrayNotHasKey('test', $_SESSION['oauth2flows']);
+    }
+
+    public function testOAuthCallbackStateIsProviderSpecific(): void
+    {
+        $auth = new BasicAuth([], ['token' => 'token']);
+        $controller = new OAuthTestController($auth, [
+            'test' => [
+                'clientId' => 'first', 'clientSecret' => 'first',
+                'redirectUri' => 'https://app.example/oauth/test',
+            ],
+            'other' => [
+                'clientId' => 'second', 'clientSecret' => 'second',
+                'redirectUri' => 'https://app.example/oauth/other',
+            ],
+        ]);
+        // Initiating a flow for one provider does not authorize another.
+        $controller->get('test', []);
+        try {
+            $controller->get('other', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+            $this->fail('State from a different provider was accepted');
+        } catch (\Exception $e) {
+            $this->assertSame(406, $e->getCode());
+        }
+        $this->assertArrayHasKey('test', $_SESSION['oauth2flows']);
+    }
+
+    public function testOAuthCallbackRejectsExpiredState(): void
+    {
+        $auth = new BasicAuth([], ['token' => 'token']);
+        $controller = new OAuthTestController($auth, [
+            'test' => ['clientId' => 'id', 'clientSecret' => 'secret',
+                'redirectUri' => 'https://app.example/oauth/test'],
+        ]);
+        $controller->get('test', []);
+        $_SESSION['oauth2flows']['test']['created_at'] = time() - 601;
+
+        try {
+            $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+            $this->fail('Expired state was accepted');
+        } catch (\Exception $e) {
+            $this->assertSame(406, $e->getCode());
+        }
+        $this->assertArrayNotHasKey('test', $_SESSION['oauth2flows']);
+    }
+
+    public function testOAuthCallbackRejectsPrincipalChangesDuringFlow(): void
+    {
+        $auth = new BasicAuth([], ['token' => 'token']);
+        $auth->register('first@example.com', 'one');
+        $auth->register('second@example.com', 'two');
+        $auth->login('first@example.com', 'one');
+        $controller = new OAuthTestController($auth, [
+            'test' => ['clientId' => 'id', 'clientSecret' => 'secret',
+                'redirectUri' => 'https://app.example/oauth/test'],
+        ]);
+        $controller->get('test', []);
+        $auth->logout();
+        $auth->login('second@example.com', 'two');
+
+        try {
+            $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+            $this->fail('Changed principal was allowed to complete provider linking');
+        } catch (\Exception $e) {
+            $this->assertSame(403, $e->getCode());
+        }
+        $this->assertArrayNotHasKey('test', $_SESSION['oauth2flows']);
+        $this->assertFalse($auth->get_credential('test', 'provider-user-id'));
+    }
+
+    public function testOAuthCallbackRejectsReplay(): void
+    {
+        $auth = new BasicAuth([], ['token' => 'token']);
+        OAuthTestProvider::$resourceOwner = $this->resourceOwner('new-subject');
+        $controller = new OAuthTestController($auth, [
+            'test' => ['clientId' => 'id', 'clientSecret' => 'secret',
+                'redirectUri' => 'https://app.example/oauth/test'],
+        ]);
+        $controller->get('test', []);
+        $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+        $this->assertArrayNotHasKey('test', $_SESSION['oauth2flows']);
+        $this->assertNotEmpty(OAuthTestProvider::$lastTokenOptions['code_verifier']);
+        try {
+            $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+            $this->fail('OAuth state could be replayed');
+        } catch (\Exception $e) {
+            $this->assertSame(406, $e->getCode());
+        }
     }
 
     public function testLoggedInUserCanLinkOAuthCredential(): void
