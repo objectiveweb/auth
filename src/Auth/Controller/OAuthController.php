@@ -290,7 +290,17 @@ class OAuthController extends AuthController
         $config['redirectUri'] = $this->validateRedirectUri($config['redirectUri'] ?? null);
         $classname = "\\League\\OAuth2\\Client\\Provider\\" . ucfirst($id);
 
-        return new $classname($config);
+        return $this->createProvider($classname, $config);
+    }
+
+    /**
+     * Optional construction hook for integration tests and custom provider
+     * collaborators (e.g. an injected PSR HTTP transport). The callback URL
+     * has already been validated before this method is called.
+     */
+    protected function createProvider(string $class, array $config): object
+    {
+        return new $class($config);
     }
 
     private function startAuthorization($id, object $provider, string $intent): string
