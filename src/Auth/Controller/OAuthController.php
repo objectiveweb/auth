@@ -356,10 +356,14 @@ class OAuthController extends AuthController
      */
     private function login($provider, $resourceOwner, string $intent = 'login')
     {
-        $uid = (string) $resourceOwner->getId();
-        if ($uid === '') {
+        $subject = $resourceOwner->getId();
+        // League OAuth2 resource owners may return a string or integer ID.
+        // Do not coerce arrays, objects or null into a credential UID.
+        if ((!is_string($subject) && !is_int($subject))
+            || trim((string) $subject) === '') {
             throw new \Objectiveweb\Auth\AuthException('Invalid provider identity', 401);
         }
+        $uid = (string) $subject;
         if (!in_array($intent, ['login', 'link'], true)) {
             throw new UserException('Invalid OAuth intent', 400);
         }
@@ -407,21 +411,16 @@ class OAuthController extends AuthController
             // Provider authentication proves an external identity, but the
             // user must choose whether to create or link a local account.
             // The OAuth callback must not create any account by itself.
-            $name = is_callable([$resourceOwner, 'getName'])
-                ? $resourceOwner->getName() : null;
-            $image = is_callable([$resourceOwner, 'getAvatar'])
-                ? $resourceOwner->getAvatar()
-                : (is_callable([$resourceOwner, 'getPictureUrl'])
-                    ? $resourceOwner->getPictureUrl() : null);
-            $email = is_callable([$resourceOwner, 'getEmail'])
-                ? $resourceOwner->getEmail() : null;
+            // ResourceOwnerInterface guarantees only getId() and toArray().
+            // Display fields are optional hints, never identity proofs.
+            $hints = $this->resourceOwnerHints($resourceOwner, $profile);
             $_SESSION[self::PENDING_KEY] = [
                 'provider' => $provider,
                 'uid' => $uid,
                 'profile' => $profile,
-                'name' => is_string($name) ? $name : null,
-                'image' => is_string($image) ? $image : null,
-                'email_hint' => is_string($email) ? $email : null,
+                'name' => $hints['name'],
+                'image' => $hints['image'],
+                'email_hint' => $hints['email_hint'],
                 'created_at' => time(),
             ];
             return ['status' => 'pending'];
@@ -429,4 +428,110 @@ class OAuthController extends AuthController
 
         return $this->auth->establish_session($user);
     }
+    /**
+     * Optional profile fields vary by provider. League's ResourceOwnerInterface
+     * guarantees only getId() and toArray(); everything else is a hint.
+     * The caller has already authenticated the provider-specific subject.
+     *
+     * @return array{name: ?string, image: ?string, email_hint: ?string}
+     */
+    private function resourceOwnerHints(object $owner, array $profile): array
+    {
+        $text = static fn (string $value): bool => true;
+        $name = $this->optionalProfileValue(
+            $owner, $profile,
+            ['getName', 'getDisplayName'],
+            ['name', 'display_name', 'displayName', 'full_name', 'fullName'],
+            $text
+        );
+
+        if ($name === null) {
+            $given = $this->optionalProfileValue(
+                $owner, $profile, ['getFirstName', 'getGivenName'],
+                ['given_name', 'first_name', 'firstName'], $text
+            );
+            $family = $this->optionalProfileValue(
+                $owner, $profile, ['getLastName', 'getFamilyName'],
+                ['family_name', 'last_name', 'lastName'], $text
+            );
+            $joined = trim(implode(' ', array_filter([$given, $family])));
+            $name = $joined !== '' ? $joined : null;
+        }
+
+        $name ??= $this->optionalProfileValue(
+            $owner, $profile, ['getNickname'],
+            ['preferred_username', 'login', 'username', 'nickname'], $text
+        );
+
+        // URLs are used for presentation only. Reject schemes such as
+        // javascript:, data: and file: even if supplied by an OAuth provider.
+        $image = $this->optionalProfileValue(
+            $owner, $profile,
+            ['getAvatar', 'getPictureUrl', 'getAvatarUrl', 'getPicture'],
+            ['avatar_url', 'avatarUrl', 'picture', 'picture_url',
+                'image', 'image_url', 'profile_image_url', 'profile_image_url_https'],
+            static fn (string $url): bool =>
+                filter_var($url, FILTER_VALIDATE_URL) !== false
+                && in_array(strtolower((string) parse_url($url, PHP_URL_SCHEME)), ['http', 'https'], true)
+        );
+
+        // Facebook-like providers may nest the picture URL in picture.data.
+        if ($image === null && is_array($profile['picture'] ?? null)) {
+            $url = $profile['picture']['data']['url'] ?? null;
+            if (is_string($url) && filter_var($url, FILTER_VALIDATE_URL) !== false
+                && in_array(strtolower((string) parse_url($url, PHP_URL_SCHEME)), ['http', 'https'], true)) {
+                $image = $url;
+            }
+        }
+
+        $email = $this->optionalProfileValue(
+            $owner, $profile, ['getEmail'],
+            ['email', 'email_address', 'emailAddress', 'mail'],
+            static fn (string $value): bool =>
+                filter_var($value, FILTER_VALIDATE_EMAIL) !== false
+        );
+
+        return ['name' => $name, 'image' => $image, 'email_hint' => $email];
+    }
+
+    /**
+     * Tolerate missing/throwing optional getters and unexpected value types.
+     * Do not invoke arbitrary profile methods or coerce objects into strings.
+     */
+    private function optionalProfileValue(
+        object $owner,
+        array $profile,
+        array $methods,
+        array $fields,
+        callable $accept
+    ): ?string {
+        foreach ($methods as $method) {
+            if (!is_callable([$owner, $method])) {
+                continue;
+            }
+            try {
+                $value = $owner->{$method}();
+            } catch (\Throwable) {
+                continue;
+            }
+            if (is_string($value)) {
+                $value = trim($value);
+                if ($value !== '' && $accept($value)) {
+                    return $value;
+                }
+            }
+        }
+
+        foreach ($fields as $field) {
+            $value = $profile[$field] ?? null;
+            if (is_string($value)) {
+                $value = trim($value);
+                if ($value !== '' && $accept($value)) {
+                    return $value;
+                }
+            }
+        }
+        return null;
+    }
+
 }
