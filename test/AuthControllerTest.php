@@ -366,6 +366,45 @@ class AuthControllerTest extends TestCase
         $this->assertSame([], $result);
     }
 
+    public function testPasswordRecoveryDeliveryLogsNoSensitiveExceptionDetails(): void
+    {
+        $recoveryToken = null;
+        $auth = new BasicAuth([], [
+            'token' => 'token',
+            'token_callback' => function (array $credential) use (&$recoveryToken): void {
+                $recoveryToken = $credential['token'];
+                throw new \RuntimeException(
+                    'Failed to deliver to private@example.com: '
+                    . 'https://app.example/reset?token=' . $recoveryToken
+                );
+            },
+        ]);
+        $auth->register('private@example.com', 'secret', ['provider' => 'email']);
+        $controller = new AuthController($auth);
+
+        $logFile = tempnam(sys_get_temp_dir(), 'ow-auth-recovery-');
+        $this->assertNotFalse($logFile);
+        $previousLogFile = ini_get('error_log');
+        try {
+            $this->assertNotFalse(ini_set('error_log', $logFile));
+            $this->assertSame([], $controller->postPassword(['uid' => 'private@example.com']));
+
+            $logged = file_get_contents($logFile);
+            $this->assertIsString($logged);
+            $this->assertMatchesRegularExpression(
+                '/Password recovery delivery failed \[ref=[0-9a-f]{16}\]: RuntimeException/',
+                $logged
+            );
+            $this->assertNotNull($recoveryToken);
+            $this->assertStringNotContainsString($recoveryToken, $logged);
+            $this->assertStringNotContainsString('private@example.com', $logged);
+            $this->assertStringNotContainsString('https://app.example/reset', $logged);
+        } finally {
+            ini_set('error_log', (string) $previousLogFile);
+            unlink($logFile);
+        }
+    }
+
     public function testPostPasswordForgotFlowUsesEmailCredential(): void
     {
         $auth = new BasicAuth([], ['token' => 'token']);
