@@ -46,36 +46,84 @@ class OAuthController extends AuthController
         /** @var \League\OAuth2\Client\Provider\GenericProvider $provider */
         $provider = new $classname($config);
 
+        $stateKey = 'oauth2flows';
         if (!empty($query['error'])) {
-            unset($_SESSION['oauth2state']);
-            throw new \Exception("Got error {$query['error']}", 500);
-        } elseif (empty($query['code'])) {
-            // generate authUrl first to update state
-            $authUrl = $provider->getAuthorizationUrl();
-            $_SESSION['oauth2state'] = $provider->getState();
+            unset($_SESSION[$stateKey][$id]);
+            throw new \Exception('OAuth provider rejected authorization', 401);
+        }
+
+        if (empty($query['code'])) {
+            // Generate a fresh PKCE S256 verifier for every authorization.
+            $verifier = rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
+            $challenge = rtrim(
+                strtr(base64_encode(hash('sha256', $verifier, true)), '+/', '-_'),
+                '='
+            );
+            $authUrl = $provider->getAuthorizationUrl([
+                'code_challenge' => $challenge,
+                'code_challenge_method' => 'S256',
+            ]);
+
+            // OAuth clients that implement PKCE themselves may override the
+            // supplied challenge; use their generated verifier when present.
+            $providerVerifier = method_exists($provider, 'getPkceCode')
+                ? $provider->getPkceCode() : null;
+            if (is_string($providerVerifier) && $providerVerifier !== '') {
+                $verifier = $providerVerifier;
+            }
+
+            $state = $provider->getState();
+            if (!is_string($state) || $state === '') {
+                throw new \RuntimeException('OAuth provider did not generate state');
+            }
+
+            $principal = $this->auth->check()
+                ? (string) $this->auth->user()[$this->auth->params['id']]
+                : null;
+            $_SESSION[$stateKey][$id] = [
+                'state' => $state,
+                'created_at' => time(),
+                'code_verifier' => $verifier,
+                'principal' => $principal,
+            ];
             $this->redirect($authUrl);
             return;
-        } elseif (
-            empty($query['state'])
-            || $query['state'] !== ($_SESSION['oauth2state'] ?? null)
-        ) {
-            unset($_SESSION['oauth2state']);
-            throw new \Exception('Invalid state', 406);
-        } else {
-            // OAuth state is single-use. Consume it before exchanging the code
-            // so a callback cannot be replayed even if the provider request fails.
-            unset($_SESSION['oauth2state']);
-
-            $token = $provider->getAccessToken('authorization_code', [
-                'code' => $query['code']
-            ]);
-            $resourceOwner = $provider->getResourceOwner($token);
-
-            $this->login($id, $resourceOwner);
-
-            $this->redirect('/');
-            return;
         }
+
+        // Keep the state, PKCE verifier and initiating principal bound to
+        // this provider. Never allow callbacks to reuse a different provider's
+        // state or silently link to a different session principal.
+        $flow = $_SESSION[$stateKey][$id] ?? null;
+        unset($_SESSION[$stateKey][$id]);
+        $state = $query['state'] ?? null;
+        if (!is_array($flow)
+            || !is_string($state)
+            || !isset($flow['state'], $flow['created_at'], $flow['code_verifier'])
+            || !is_string($flow['state'])
+            || !hash_equals($flow['state'], $state)
+            || !is_int($flow['created_at'])
+            || $flow['created_at'] > time()
+            || time() - $flow['created_at'] > 600
+            || !is_string($flow['code_verifier'])
+            || $flow['code_verifier'] === '') {
+            throw new \Exception('Invalid or expired OAuth state', 406);
+        }
+        $currentPrincipal = $this->auth->check()
+            ? (string) $this->auth->user()[$this->auth->params['id']]
+            : null;
+        if (($flow['principal'] ?? null) !== $currentPrincipal) {
+            throw new \Exception('OAuth session changed during authorization', 403);
+        }
+
+        // Consume state before exchanging the authorization code. A callback
+        // cannot be replayed, even if token exchange or login fails.
+        $token = $provider->getAccessToken('authorization_code', [
+            'code' => $query['code'],
+            'code_verifier' => $flow['code_verifier'],
+        ]);
+        $resourceOwner = $provider->getResourceOwner($token);
+        $this->login($id, $resourceOwner);
+        $this->redirect('/');
     }
 
     protected function resolveRedirectUri(): string
