@@ -102,40 +102,92 @@ class OAuthControllerTest extends TestCase
         );
     }
 
-    public function testOAuthCallbackDoesNotLinkAccountByEmail(): void
+    public function testFirstTimeOAuthOffersAccountChoiceWithoutCreatingUser(): void
     {
         $auth = new OAuthTrackingBasicAuth([], ['token' => 'token']);
         $existing = $auth->register('linked@example.com', 'secret', ['provider' => 'email']);
-
         OAuthTestProvider::$resourceOwner = $this->resourceOwner(
             'provider-user-id', 'linked@example.com'
         );
-        $controller = new OAuthTestController($auth, [
-            'test' => [
-                'clientId' => 'client-id',
-                'clientSecret' => 'client-secret',
-                'redirectUri' => 'https://app.example/oauth/test',
-            ],
-        ]);
+        $controller = $this->testController($auth);
         $controller->get('test', []);
         $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
 
         $this->assertArrayNotHasKey('test', $_SESSION['oauth2flows']);
-        $this->assertSame(
-            $_SESSION['oauth2flows']['test']['code_verifier'] ?? null,
-            null
-        );
-        $this->assertNotEmpty(OAuthTestProvider::$lastTokenOptions['code_verifier']);
-        $this->assertSame('/', $controller->redirectedTo);
-        $this->assertTrue($auth->sessionRegenerated);
-        $this->assertNotSame($existing['id'], $auth->user()['id']);
+        $this->assertSame('/?oauth=choose-account', $controller->redirectedTo);
+        $this->assertFalse($auth->check());
+        $this->assertFalse($auth->get_credential('test', 'provider-user-id'));
         $this->assertSame($existing['id'], $auth->get_credential('email', 'linked@example.com')['user_id']);
 
-        $credential = $auth->get_credential('test', 'provider-user-id');
-        $this->assertSame($auth->user()['id'], $credential['user_id']);
-        $this->assertNotEmpty($credential['verified_at']);
-        $this->assertFalse($auth->get_credential('email', 'provider-user-id'));
+        $choice = $controller->getPendingAccount();
+        $this->assertSame('account_choice_required', $choice['status']);
+        $this->assertSame(['create', 'existing'], $choice['choices']);
+        $this->assertSame('test', $choice['provider']);
+        $this->assertSame('linked@example.com', $choice['email_hint']);
+        $this->assertNotEmpty($choice['_csrf']);
+        $this->assertArrayNotHasKey('uid', $choice);
+        $this->assertArrayNotHasKey('profile', $choice);
     }
+
+    public function testFirstTimeOAuthCanExplicitlyCreateNewAccount(): void
+    {
+        $auth = new OAuthTrackingBasicAuth([], ['token' => 'token']);
+        $local = $auth->register('matching@example.com', 'old-password');
+        OAuthTestProvider::$resourceOwner = $this->resourceOwner(
+            'new-oauth-subject', 'matching@example.com'
+        );
+        $controller = $this->testController($auth);
+        $controller->get('test', []);
+        $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+
+        $this->withLinkHeaders($auth);
+        $result = $controller->postCreateAccount(['name' => 'New OAuth Account']);
+        $this->assertSame('created', $result['status']);
+        $created = $result['user'];
+        $this->assertNotSame($local['id'], $created['id']);
+        $this->assertSame('New OAuth Account', $created['name']);
+        $this->assertSame($created['id'], $auth->get_credential('test', 'new-oauth-subject')['user_id']);
+        $this->assertNotEmpty($auth->get_credential('test', 'new-oauth-subject')['verified_at']);
+        $this->assertSame($local['id'], $auth->get_credential('local', 'matching@example.com')['user_id']);
+        $this->assertFalse($auth->get_credential('local', 'new-oauth-subject'));
+        $this->assertArrayNotHasKey('oauth2pending', $_SESSION);
+        $this->assertTrue($auth->check());
+    }
+
+    public function testFirstTimeOAuthCanAuthenticateExistingAccountAndLink(): void
+    {
+        $auth = new OAuthTrackingBasicAuth([], ['token' => 'token']);
+        $local = $auth->register('old@example.com', 'local-secret');
+        OAuthTestProvider::$resourceOwner = $this->resourceOwner(
+            'pending-oauth-subject', 'provider-email@example.com'
+        );
+        $controller = $this->testController($auth);
+        $controller->get('test', []);
+        $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+
+        $this->withLinkHeaders($auth);
+        try {
+            $controller->postExistingAccount(['uid' => 'old@example.com', 'password' => 'wrong']);
+            $this->fail('Incorrect local password was accepted');
+        } catch (AuthException $e) {
+            $this->assertSame(401, $e->getCode());
+        }
+        $this->assertFalse($auth->check());
+        $this->assertArrayHasKey('oauth2pending', $_SESSION);
+        $this->assertFalse($auth->get_credential('test', 'pending-oauth-subject'));
+
+        $result = $controller->postExistingAccount([
+            'uid' => 'old@example.com',
+            'password' => 'local-secret',
+        ]);
+        $this->assertSame('linked', $result['status']);
+        $this->assertSame($local['id'], $result['user']['id']);
+        $this->assertSame($local['id'], $auth->get_credential('test', 'pending-oauth-subject')['user_id']);
+        $this->assertNotEmpty($auth->get_credential('test', 'pending-oauth-subject')['verified_at']);
+        $this->assertArrayNotHasKey('oauth2pending', $_SESSION);
+        $this->assertTrue($auth->check());
+    }
+
 
     public function testUnverifiedOAuthCredentialCannotBeUsedToLogInAnotherAccount(): void
     {
@@ -537,6 +589,17 @@ class OAuthControllerTest extends TestCase
         $this->assertTrue($auth->check());
         $this->assertSame($user['id'], $logged['id']);
         $this->assertSame($user['id'], $auth->user()['id']);
+    }
+
+    private function testController(BasicAuth $auth, string $pendingRedirect = '/?oauth=choose-account'): OAuthTestController
+    {
+        return new OAuthTestController($auth, [
+            'test' => [
+                'clientId' => 'client-id',
+                'clientSecret' => 'client-secret',
+                'redirectUri' => 'https://app.example/oauth/test',
+            ],
+        ], $pendingRedirect);
     }
 
     private function withLinkHeaders(BasicAuth $auth): void
