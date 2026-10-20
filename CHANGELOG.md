@@ -25,7 +25,7 @@ All notable changes to `objectiveweb/auth` are documented here. This project fol
 - Local identifiers are represented as credentials (`provider = local`, `uid`); the user table no longer contains the legacy `username` identity column by default.
 - Password login failures return the same `AuthException` HTTP 401 for unknown identifiers, bad passwords and suspended accounts.
 - Password reset tokens are cryptographically random, stored only as SHA-256 digests, expire and are consumed atomically; previously issued plaintext legacy tokens do **not** carry forward.
-- Session IDs regenerate upon authentication, protected requests can revalidate account status and roles, and public user payloads are sanitized.
+- Session IDs regenerate upon authentication; `user_can()` revalidates account status and roles on every call so deleted/suspended accounts and revoked roles cannot retain access through stale sessions. Public user payloads are sanitized.
 - User-facing password changes require the existing password, a session-bound `X-CSRF-Token`, and a JSON request; public registration is restricted to local credentials and safe profile fields.
 - OAuth callbacks require a **configured, trusted `redirectUri`** (HTTPS, or explicitly configured HTTP loopback for local development), no longer inferred from Host/proxy request headers.
 - OAuth provider-resource-owner display names, emails and avatars are optional hints with safe fallbacks; matching email addresses do **not** link accounts.

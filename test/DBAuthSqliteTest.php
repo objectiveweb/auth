@@ -776,6 +776,88 @@ class DBAuthSqliteTest extends TestCase
         $this->assertSame(['admin'], $current['roles']);
     }
 
+    public function testUserCanRevalidatesRolesAfterChangesOutsideSession(): void
+    {
+        $user = self::$auth->register('role-refresh@example.com', 'secret', [
+            'roles' => ['admin'],
+        ]);
+        self::$auth->login('role-refresh@example.com', 'secret');
+        $this->assertTrue(self::$auth->user_can('admin'));
+
+        // Updating a user does not update the existing session by itself.
+        self::$auth->update($user['id'], ['roles' => ['editor']]);
+        $this->assertSame(['admin'], self::$auth->user()['roles']);
+
+        $this->assertFalse(self::$auth->user_can('admin'));
+        $this->assertTrue(self::$auth->user_can('editor'));
+        $this->assertSame(['editor'], self::$auth->user()['roles']);
+        $this->assertTrue(self::$auth->check());
+
+        // Revocations and grants are both visible on the next permission check.
+        self::$auth->update($user['id'], ['roles' => []]);
+        $this->assertFalse(self::$auth->user_can('editor'));
+        $this->assertSame([], self::$auth->user()['roles']);
+    }
+
+    public function testUserCanRejectsSuspendedAccountForAllCheckModes(): void
+    {
+        $user = self::$auth->register('suspended-permissions@example.com', 'secret', [
+            'roles' => ['admin'],
+        ]);
+        $sessionUser = self::$auth->login('suspended-permissions@example.com', 'secret');
+
+        self::$db->insert('item_users', [
+            'user_id' => $user['id'],
+            'item_id' => 7,
+            'ability' => 'manage',
+        ]);
+        self::$db->insert('user_delegations', [
+            'user_id' => $user['id'],
+            'target_user_id' => 123,
+            'ability' => 'manage',
+        ]);
+        $this->assertTrue(self::$auth->user_can('admin'));
+        $this->assertTrue(self::$auth->user_can('manage', 123));
+        $this->assertTrue(self::$auth->user_can('manage', 'item', 7));
+        $this->assertSame([7], self::$auth->user_can('manage', 'item'));
+
+        self::$auth->update($user['id'], ['disabled_at' => '2026-10-20 12:00:00']);
+        $sessionKey = self::$auth->params['session_key'];
+
+        // Each restored snapshot represents a different pre-existing session.
+        $_SESSION[$sessionKey] = $sessionUser;
+        $this->assertFalse(self::$auth->user_can('admin'));
+        $this->assertFalse(self::$auth->check());
+
+        $_SESSION[$sessionKey] = $sessionUser;
+        $this->assertFalse(self::$auth->user_can('manage', 123));
+        $this->assertFalse(self::$auth->check());
+
+        $_SESSION[$sessionKey] = $sessionUser;
+        $this->assertFalse(self::$auth->user_can('manage', 'item', 7));
+        $this->assertFalse(self::$auth->check());
+
+        $_SESSION[$sessionKey] = $sessionUser;
+        $this->assertSame([], self::$auth->user_can('manage', 'item'));
+        $this->assertFalse(self::$auth->check());
+    }
+
+    public function testUserCanRejectsSessionForDeletedUser(): void
+    {
+        $user = self::$auth->register('deleted-permissions@example.com', 'secret', [
+            'roles' => ['admin'],
+        ]);
+        $sessionUser = self::$auth->login('deleted-permissions@example.com', 'secret');
+
+        self::$auth->logout();
+        self::$auth->delete($user['id']);
+
+        // A separate browser still carries an old session snapshot.
+        $_SESSION[self::$auth->params['session_key']] = $sessionUser;
+        $this->assertFalse(self::$auth->user_can('admin'));
+        $this->assertFalse(self::$auth->check());
+    }
+
     public function testUpdateRolesReplacesAssignments(): void
     {
         $user = self::$auth->register('roles@example.com', 'secret', [

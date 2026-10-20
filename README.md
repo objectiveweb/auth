@@ -356,6 +356,8 @@ $auth->update($admin['id'], ['roles' => ['admin', 'editor']]);
 $auth->user_can('admin'); // bool
 ```
 
+`user_can()` **revalidates the logged-in principal on every permission check**, including role, resource and delegation checks. Role grants/revocations take effect immediately on the next call; suspended or deleted users are logged out and denied (`false`, or `[]` for a resource-list query). This requires a backend read for every call, so cache permission decisions only within a deliberately controlled authorization boundary, never across requests.
+
 Direct `DBAuth::register()` / `update()` can create role definitions when syncing names that do not exist. The **admin UserController API** is intentionally stricter and accepts only *existing* role names: seed the allowed roles before using its role-management endpoints. The public registration controller always ignores role grants, regardless of `register_allow_grants`. Both `roles_table` and `user_roles_table` must be disabled together if roles are not wanted.
 
 #### Relations and authorization
