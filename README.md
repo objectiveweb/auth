@@ -220,14 +220,12 @@ For password-based login and session management:
 
 ```php
 use Objectiveweb\Auth\AuthException;
-use Objectiveweb\Auth\UserException;
 
 try {
     $current = $auth->login('alice@example.com', 'secret');
-} catch (UserException $e) {
-    // Unknown login identity
 } catch (AuthException $e) {
-    // Bad password or suspended account
+    // 401 "Invalid credentials" for unknown users, wrong passwords, or
+    // suspended accounts. Do not reveal which case applies.
 }
 
 if ($auth->check()) {
@@ -447,7 +445,7 @@ $auth->passwd_reset($token, 'new-password');
 
 `DBAuth` stores only a SHA-256 digest of the high-entropy reset token and looks it up through the indexed token column. The plaintext token is returned only once for delivery.
 
-Anonymous password-recovery requests intentionally return the same empty success payload whether or not the supplied UID exists. Recovery callbacks are delivery-only: their return value is not exposed, and delivery failures do not change the anonymous response. Applications should still rate-limit recovery requests at the HTTP/application edge.
+Anonymous password-recovery requests intentionally return the same empty success payload whether or not the supplied UID exists. Recovery callbacks are delivery-only: their return value is not exposed, and delivery failures do not change the anonymous response. **There is no built-in rate limiting in v0.2.0.** Applications must enforce external rate limits at their web server, reverse proxy, gateway, or middleware for login, public registration, recovery, reset-token redemption, and credential verification. Future non-database throttling is tracked in [issue #2](https://github.com/objectiveweb/auth/issues/2).
 
 ## OAuth controller
 
@@ -465,7 +463,11 @@ $oauth = new OAuthController($auth, [
 ]);
 ```
 
-If `redirectUri` is omitted, the controller derives it from the current request for development/legacy setups. OAuth state is single-use and is cleared when the callback is consumed.
+If `redirectUri` is omitted, the controller derives it from the current request for development/legacy setups. **Use an explicit trusted redirect URI in production:** request-derived host and proxy headers are not an authorization boundary.
+
+OAuth authorization includes a fresh **PKCE S256** challenge and stores a per-provider authorization flow in the PHP session (`oauth2flows`). The callback requires the matching provider's state, the original initiating session principal, and a state created within the past 10 minutes. The state is consumed before exchanging the code, and the matching PKCE verifier is supplied to the token endpoint. Providers must support PKCE S256. OAuth accounts are linked by the provider's stable subject identifier only; matching email addresses never establishes or links identities.
+
+A pending OAuth credential can only be confirmed by the already authenticated owner completing the matching provider login; anonymous sign-in through an unverified provider association is rejected.
 
 ## User-management API
 
