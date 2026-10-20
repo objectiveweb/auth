@@ -153,14 +153,25 @@ class OAuthControllerTest extends TestCase
     {
         $auth = new OAuthTrackingBasicAuth([], ['token' => 'token']);
         $owner = $auth->register('owner@example.com', 'secret');
-        $auth->create_credential($owner['id'], 'google', 'owner-subject');
+        $auth->create_credential($owner['id'], 'test', 'owner-subject');
         $auth->login('owner@example.com', 'secret');
+        $controller = new OAuthTestController($auth, [
+            'test' => [
+                'clientId' => 'client-id',
+                'clientSecret' => 'client-secret',
+                'redirectUri' => 'https://app.example/oauth/test',
+            ],
+        ]);
+        OAuthTestProvider::$resourceOwner = $this->resourceOwner('owner-subject');
 
-        $controller = new OAuthController($auth);
-        $logged = $this->invokeOAuthLogin($controller, 'google', $this->resourceOwner('owner-subject'));
+        $this->withLinkHeaders($auth);
+        $controller->postLink('test');
+        $this->assertSame('link', $_SESSION['oauth2flows']['test']['intent']);
+        $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
 
-        $this->assertSame($owner['id'], $logged['id']);
-        $this->assertNotEmpty($auth->get_credential('google', 'owner-subject')['verified_at']);
+        $this->assertSame($owner['id'], $auth->user()['id']);
+        $this->assertNotEmpty($auth->get_credential('test', 'owner-subject')['verified_at']);
+        $this->assertArrayNotHasKey('test', $_SESSION['oauth2flows']);
     }
 
     public function testSignedInUserCannotSwitchToDifferentVerifiedOAuthAccount(): void
@@ -295,17 +306,197 @@ class OAuthControllerTest extends TestCase
         $user = $auth->register('local@example.com', 'secret');
         $auth->login('local@example.com', 'secret');
 
-        $controller = new OAuthController($auth, []);
-        $logged = $this->invokeOAuthLogin(
-            $controller,
-            'google',
-            $this->resourceOwner('google-linked-id')
-        );
+        $controller = new OAuthTestController($auth, [
+            'test' => [
+                'clientId' => 'client-id',
+                'clientSecret' => 'client-secret',
+                'redirectUri' => 'https://app.example/oauth/test',
+            ],
+        ]);
+        OAuthTestProvider::$resourceOwner = $this->resourceOwner('new-linked-id');
+        $this->withLinkHeaders($auth);
+        $controller->postLink('test');
+        $this->assertSame('link', $_SESSION['oauth2flows']['test']['intent']);
+        $this->assertSame((string) $user['id'], $_SESSION['oauth2flows']['test']['principal']);
+        $this->assertSame('https://oauth.example/authorize', $controller->redirectedTo);
 
-        $credential = $auth->get_credential('google', 'google-linked-id');
+        $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+
+        $credential = $auth->get_credential('test', 'new-linked-id');
         $this->assertNotFalse($credential);
         $this->assertSame($user['id'], $credential['user_id']);
-        $this->assertSame($user['id'], $logged['id']);
+        $this->assertNotEmpty($credential['verified_at']);
+        $this->assertSame($user['id'], $auth->user()['id']);
+        $this->assertArrayNotHasKey('test', $_SESSION['oauth2flows']);
+        $this->assertNotEmpty(OAuthTestProvider::$lastTokenOptions['code_verifier']);
+    }
+
+    public function testOrdinaryOAuthLoginCannotLinkNewCredentialToLoggedInUser(): void
+    {
+        $auth = new OAuthTrackingBasicAuth([], ['token' => 'token']);
+        $owner = $auth->register('local@example.com', 'secret');
+        $auth->login('local@example.com', 'secret');
+        $controller = new OAuthTestController($auth, [
+            'test' => [
+                'clientId' => 'client-id',
+                'clientSecret' => 'client-secret',
+                'redirectUri' => 'https://app.example/oauth/test',
+            ],
+        ]);
+        OAuthTestProvider::$resourceOwner = $this->resourceOwner('unrelated-subject');
+
+        $controller->get('test', ['link' => '1']);
+        $this->assertSame('login', $_SESSION['oauth2flows']['test']['intent']);
+        try {
+            $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state', 'intent' => 'link']);
+            $this->fail('OAuth login silently linked a credential');
+        } catch (\Objectiveweb\Auth\UserException $e) {
+            $this->assertSame(409, $e->getCode());
+        }
+
+        $this->assertFalse($auth->get_credential('test', 'unrelated-subject'));
+        $this->assertSame($owner['id'], $auth->user()['id']);
+        $this->assertArrayNotHasKey('test', $_SESSION['oauth2flows']);
+    }
+
+    public function testOrdinaryOAuthLoginCannotConfirmPendingCredential(): void
+    {
+        $auth = new OAuthTrackingBasicAuth([], ['token' => 'token']);
+        $owner = $auth->register('local@example.com', 'secret');
+        $auth->create_credential($owner['id'], 'test', 'pending-subject');
+        $auth->login('local@example.com', 'secret');
+        OAuthTestProvider::$resourceOwner = $this->resourceOwner('pending-subject');
+        $controller = new OAuthTestController($auth, [
+            'test' => [
+                'clientId' => 'client-id',
+                'clientSecret' => 'client-secret',
+                'redirectUri' => 'https://app.example/oauth/test',
+            ],
+        ]);
+
+        $controller->get('test', []);
+        try {
+            $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+            $this->fail('Unverified OAuth credential was confirmed without explicit linking');
+        } catch (AuthException $e) {
+            $this->assertSame(403, $e->getCode());
+        }
+        $this->assertEmpty($auth->get_credential('test', 'pending-subject')['verified_at']);
+    }
+
+    public function testLinkRequiresAuthenticationAndCsrfProtectedPost(): void
+    {
+        $auth = new BasicAuth([], ['token' => 'token']);
+        $controller = new OAuthTestController($auth, [
+            'test' => [
+                'clientId' => 'client-id',
+                'clientSecret' => 'client-secret',
+                'redirectUri' => 'https://app.example/oauth/test',
+            ],
+        ]);
+        $_SERVER['REQUEST_METHOD'] = 'POST';
+        $_SERVER['CONTENT_TYPE'] = 'application/json';
+        try {
+            $controller->postLink('test');
+            $this->fail('Anonymous account was allowed to link a credential');
+        } catch (AuthException $e) {
+            $this->assertSame(401, $e->getCode());
+        }
+
+        $auth->register('owner@example.com', 'secret');
+        $auth->login('owner@example.com', 'secret');
+        try {
+            $controller->postLink('test');
+            $this->fail('CSRF-free account linking was accepted');
+        } catch (\Objectiveweb\Auth\UserException $e) {
+            $this->assertSame(403, $e->getCode());
+        }
+
+        $_SERVER['HTTP_X_CSRF_TOKEN'] = $auth->management_csrf_token();
+        $_SERVER['REQUEST_METHOD'] = 'GET';
+        try {
+            $controller->postLink('test');
+            $this->fail('GET was allowed to initiate linking');
+        } catch (\Objectiveweb\Auth\UserException $e) {
+            $this->assertSame(405, $e->getCode());
+        }
+
+        $_SERVER['REQUEST_METHOD'] = 'POST';
+        $_SERVER['CONTENT_TYPE'] = 'application/x-www-form-urlencoded';
+        try {
+            $controller->postLink('test');
+            $this->fail('Cross-origin form POST was accepted');
+        } catch (\Objectiveweb\Auth\UserException $e) {
+            $this->assertSame(415, $e->getCode());
+        }
+
+        $this->assertArrayNotHasKey('test', $_SESSION['oauth2flows'] ?? []);
+    }
+
+    public function testLinkCannotTakeOverProviderCredentialOfAnotherUser(): void
+    {
+        $auth = new OAuthTrackingBasicAuth([], ['token' => 'token']);
+        $victim = $auth->register('victim@example.com', 'secret');
+        $auth->create_credential($victim['id'], 'test', 'victim-subject');
+        $auth->mark_credential_verified($victim['id'], 'test', 'victim-subject');
+        $attacker = $auth->register('attacker@example.com', 'secret');
+        $auth->login('attacker@example.com', 'secret');
+        OAuthTestProvider::$resourceOwner = $this->resourceOwner('victim-subject');
+        $controller = new OAuthTestController($auth, [
+            'test' => [
+                'clientId' => 'client-id',
+                'clientSecret' => 'client-secret',
+                'redirectUri' => 'https://app.example/oauth/test',
+            ],
+        ]);
+
+        $this->withLinkHeaders($auth);
+        $controller->postLink('test');
+        try {
+            $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+            $this->fail('Linked credential was stolen from another user');
+        } catch (\Objectiveweb\Auth\UserException $e) {
+            $this->assertSame(409, $e->getCode());
+        }
+        $this->assertSame($victim['id'], $auth->get_credential('test', 'victim-subject')['user_id']);
+        $this->assertSame($attacker['id'], $auth->user()['id']);
+        $this->assertArrayNotHasKey('test', $_SESSION['oauth2flows']);
+    }
+
+    public function testExplicitLinkRejectsChangedSessionAndCannotBeReplayed(): void
+    {
+        $auth = new OAuthTrackingBasicAuth([], ['token' => 'token']);
+        $auth->register('first@example.com', 'secret');
+        $auth->register('second@example.com', 'secret');
+        $auth->login('first@example.com', 'secret');
+        OAuthTestProvider::$resourceOwner = $this->resourceOwner('provider-subject');
+        $controller = new OAuthTestController($auth, [
+            'test' => [
+                'clientId' => 'client-id',
+                'clientSecret' => 'client-secret',
+                'redirectUri' => 'https://app.example/oauth/test',
+            ],
+        ]);
+
+        $this->withLinkHeaders($auth);
+        $controller->postLink('test');
+        $auth->logout();
+        $auth->login('second@example.com', 'secret');
+        try {
+            $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+            $this->fail('Switched user completed someone else\'s OAuth linking flow');
+        } catch (\Exception $e) {
+            $this->assertSame(403, $e->getCode());
+        }
+        $this->assertFalse($auth->get_credential('test', 'provider-subject'));
+        $this->assertArrayNotHasKey('test', $_SESSION['oauth2flows']);
+
+        try {
+            $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+            $this->fail('Linking callback replayed');
+        } catch (\Exception $e) {
+            $this->assertSame(406, $e->getCode());
+        }
     }
 
     public function testOAuthLoginRejectsSuspendedUser(): void
@@ -345,6 +536,13 @@ class OAuthControllerTest extends TestCase
         $this->assertTrue($auth->check());
         $this->assertSame($user['id'], $logged['id']);
         $this->assertSame($user['id'], $auth->user()['id']);
+    }
+
+    private function withLinkHeaders(BasicAuth $auth): void
+    {
+        $_SERVER['REQUEST_METHOD'] = 'POST';
+        $_SERVER['CONTENT_TYPE'] = 'application/json; charset=utf-8';
+        $_SERVER['HTTP_X_CSRF_TOKEN'] = $auth->management_csrf_token();
     }
 
     private function invokeOAuthLogin(
