@@ -266,6 +266,77 @@ final class RealOAuthProviderTest extends TestCase
         $this->assertNotEmpty($credential['verified_at']);
     }
 
+    public function testRealGoogleProviderSignsInExistingLinkedAccountWithoutNewChoice(): void
+    {
+        $history = [];
+        $http = $this->clientWithResponses([
+            ['access_token' => 'integration-access-token', 'token_type' => 'Bearer', 'expires_in' => 3600],
+            ['sub' => 'known-google-id', 'name' => 'Returning Google User', 'email' => 'returning@example.com'],
+        ], $history);
+        $auth = new BasicAuth([], ['token' => 'token']);
+        $owner = $auth->register('returning@example.com', 'secret');
+        $auth->create_credential($owner['id'], 'google', 'known-google-id');
+        $auth->mark_credential_verified($owner['id'], 'google', 'known-google-id');
+        $controller = new RealOAuthProviderController($auth, $this->providerConfig('google'), $http);
+
+        $controller->get('google', []);
+        $flow = $this->assertAuthorizationRequest($controller, 'google');
+        $controller->get('google', [
+            'code' => 'integration-auth-code', 'state' => $flow['state'],
+        ]);
+
+        $this->assertTokenAndProfileRequests($history, 'google', $flow['code_verifier']);
+        $this->assertSame('/', $controller->redirectedTo);
+        $this->assertTrue($auth->check());
+        $this->assertSame($owner['id'], $auth->user()['id']);
+        $this->assertArrayNotHasKey('oauth2pending', $_SESSION);
+    }
+
+    public function testRealFacebookProviderExplicitLinkUsesSameAccountAndPkce(): void
+    {
+        $history = [];
+        $http = $this->clientWithResponses([
+            ['access_token' => 'integration-access-token', 'token_type' => 'bearer', 'expires_in' => 3600],
+            ['id' => 'new-facebook-identity', 'name' => 'Linked Facebook User'],
+        ], $history);
+        $auth = new BasicAuth([], ['token' => 'token']);
+        $owner = $auth->register('facebook-link@example.com', 'correct-password');
+        $auth->login('facebook-link@example.com', 'correct-password');
+        $controller = new RealOAuthProviderController($auth, $this->providerConfig('facebook'), $http);
+        $this->authorizeAccountChoice($auth);
+
+        $link = $controller->postLink('facebook');
+        $this->assertArrayHasKey('authorization_url', $link);
+        $controller->redirectedTo = $link['authorization_url'];
+        $flow = $this->assertLinkAuthorizationRequest($controller);
+
+        $controller->get('facebook', [
+            'code' => 'integration-auth-code', 'state' => $flow['state'],
+        ]);
+        $this->assertTokenAndProfileRequests($history, 'facebook', $flow['code_verifier']);
+        $this->assertSame('/', $controller->redirectedTo);
+        $this->assertSame($owner['id'], $auth->user()['id']);
+        $credential = $auth->get_credential('facebook', 'new-facebook-identity');
+        $this->assertSame($owner['id'], $credential['user_id']);
+        $this->assertNotEmpty($credential['verified_at']);
+        $this->assertArrayNotHasKey('oauth2pending', $_SESSION);
+    }
+
+    private function assertLinkAuthorizationRequest(RealOAuthProviderController $controller): array
+    {
+        $flow = $_SESSION['oauth2flows']['facebook'];
+        $this->assertSame('link', $flow['intent']);
+        $this->assertNotNull($flow['principal']);
+        parse_str((string) parse_url($controller->redirectedTo, PHP_URL_QUERY), $query);
+        $this->assertSame($flow['state'], $query['state']);
+        $this->assertSame('S256', $query['code_challenge_method']);
+        $this->assertSame(
+            rtrim(strtr(base64_encode(hash('sha256', $flow['code_verifier'], true)), '+/', '-_'), '='),
+            $query['code_challenge']
+        );
+        return $flow;
+    }
+
     public function testRealGoogleProviderRejectsWrongOAuthStateBeforeHttp(): void
     {
         $history = [];
