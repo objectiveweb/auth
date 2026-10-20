@@ -467,9 +467,46 @@ If `redirectUri` is omitted, the controller derives it from the current request 
 
 OAuth authorization includes a fresh **PKCE S256** challenge and stores a per-provider authorization flow in the PHP session (`oauth2flows`). The callback requires the matching provider's state, the original initiating session principal, and a state created within the past 10 minutes. The state is consumed before exchanging the code, and the matching PKCE verifier is supplied to the token endpoint. Providers must support PKCE S256. OAuth accounts are linked by the provider's stable subject identifier only; matching email addresses never establishes or links identities.
 
+### First-time OAuth account choice (no automatic duplicate accounts)
+
+After the OAuth authorization-code/PKCE exchange, if no `(provider, uid)` credential exists, the user is **not logged in** and no local user is created. A short-lived `oauth2pending` entry remains in their PHP session; it contains the provider's verified subject, profile, safe display hints, and creation timestamp, and expires after 10 minutes. The OAuth state is already consumed.
+
+The callback redirects to **`/?oauth=choose-account`** by default. The application must render an account-choice page at that URL (or configure a different same-origin path in the controller constructor):
+
+```php
+$oauth = new OAuthController($auth, $providers, '/account/choose');
+```
+
+A ready-to-adapt frontend is included as [`examples/oauth-account-choice.html`](examples/oauth-account-choice.html). The library does not manage application UI routes, so mount the page at the configured redirect path and map the following methods to your application router:
+
+| Example route | OAuthController method | Function |
+| --- | --- | --- |
+| `GET /auth/oauth/pending` | `getPendingAccount()` | Safe choice metadata, email/name hints and session `_csrf` |
+| `POST /auth/oauth/pending/create` | `postCreateAccount(array $form)` | Explicitly create a new **OAuth-only** local account |
+| `POST /auth/oauth/pending/existing` | `postExistingAccount(array $form)` | Authenticate existing `uid` and `password`, then link the provider identity |
+| `POST /auth/oauth/pending/cancel` | `postCancelPendingAccount()` | Discard the pending identity |
+
+All three POST actions require JSON, the `X-CSRF-Token` from `getPendingAccount()`, and the same browser session. Creation permits only optional `name` and respects `register_scope`; arbitrary provider, user ID, role and profile fields are rejected. Existing-account linking requires the actual password for that existing account. Wrong passwords do not consume the pending proof, so users can retry before expiry. Neither option treats the provider email as an automatically verified local email credential.
+
+On successful creation, the library creates an external-provider credential and establishes a new local session. On successful existing-account login, it attaches **that same provider identity to the password-authenticated local user**, marks the provider credential verified, and keeps that existing account. Both actions consume the pending proof; it cannot be reused. Concurrent ownership conflicts return HTTP 409; expired/cancelled/consumed choices return HTTP 410. For security, do not store the pending proof in the browser or return OAuth tokens/provider subject IDs as client data. The application must maintain secure, HttpOnly, SameSite session cookies; enforce external rate limits (see issue #2); and avoid caching the pending-account API response.
+
+```js
+const pending = await fetch('/auth/oauth/pending', { credentials: 'same-origin' }).then(r => r.json());
+// Render two user-selected actions: "Create new account" and "Use existing account".
+const response = await fetch('/auth/oauth/pending/existing', {
+  method: 'POST',
+  credentials: 'same-origin',
+  headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': pending._csrf },
+  body: JSON.stringify({ uid: email, password }),
+});
+// Do not navigate to the signed-in area unless response.ok.
+```
+
+If the OAuth credential already belongs to a verified local user, normal OAuth login still signs that user in immediately. If the local user is already signed in and wants another OAuth credential, use the explicit account-linking flow below instead.
+
 ### Explicit OAuth account linking
 
-**OAuth login and account linking are separate operations.** A normal `OAuthController::get($provider, $query)` authorization/callback can authenticate an already verified external identity or register a **new, separate account** for an anonymous user. It never attaches a new provider credential to an existing authenticated account, even when email addresses match. A signed-in user attempting to sign in through an unassociated provider receives HTTP 409 and must explicitly link the account first. Existing unverified OAuth identities cannot sign in anonymously or be silently confirmed.
+**OAuth login and account linking are separate operations.** A normal `OAuthController::get($provider, $query)` authorization/callback authenticates an already verified external identity. If an anonymous user's provider identity has no local credential yet, the callback **does not create an account**: it stores a ten-minute, session-bound pending identity and redirects to a configurable account-choice page. It never attaches a new provider credential to an existing authenticated account, even when email addresses match. A signed-in user attempting to sign in through an unassociated provider receives HTTP 409 and must explicitly link the account first. Existing unverified OAuth identities cannot sign in anonymously or be silently confirmed.
 
 To link a provider, the application must expose `OAuthController::postLink($provider)` on an authenticated **POST** route (for example, `POST /auth/oauth/link/google` using the application's router). The request requires `Content-Type: application/json` and a valid session-bound `X-CSRF-Token` from `Auth::management_csrf_token()` (also available in the logged-in `AuthController::index()` response as `_csrf`). Do not allow GET links or unprotected forms to initiate linking.
 
@@ -493,6 +530,8 @@ window.location.assign(authorization_url);
 The provider's usual OAuth callback still uses `get()`. The session flow records an explicit `link` intent, the initiating user ID, provider, PKCE verifier, expiring one-time state and login session. Only a valid callback for the same active user may create/verify that user's provider credential. Identities already associated with a different user are rejected with HTTP 409; unverified mappings owned by the current user require this explicit flow to be confirmed. State is consumed even when linking fails.
 
 Applications should make the action visible only after the user chooses **Link account**, and may require additional recent-authentication or step-up checks as local policy dictates. All existing authorization, CSRF, and provider-account security checks continue to apply.
+
+The explicit authenticated `postLink()` flow remains distinct from the *anonymous first-time* account choice above. Never interpret an OAuth callback, query-string `intent`, or matching email as permission to link accounts.
 
 ## User-management API
 
