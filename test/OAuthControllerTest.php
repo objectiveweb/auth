@@ -165,7 +165,8 @@ class OAuthControllerTest extends TestCase
         OAuthTestProvider::$resourceOwner = $this->resourceOwner('owner-subject');
 
         $this->withLinkHeaders($auth);
-        $controller->postLink('test');
+        $linkResponse = $controller->postLink('test');
+        $this->assertSame('https://oauth.example/authorize', $linkResponse['authorization_url']);
         $this->assertSame('link', $_SESSION['oauth2flows']['test']['intent']);
         $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
 
@@ -315,10 +316,10 @@ class OAuthControllerTest extends TestCase
         ]);
         OAuthTestProvider::$resourceOwner = $this->resourceOwner('new-linked-id');
         $this->withLinkHeaders($auth);
-        $controller->postLink('test');
+        $linkResponse = $controller->postLink('test');
         $this->assertSame('link', $_SESSION['oauth2flows']['test']['intent']);
         $this->assertSame((string) $user['id'], $_SESSION['oauth2flows']['test']['principal']);
-        $this->assertSame('https://oauth.example/authorize', $controller->redirectedTo);
+        $this->assertSame('https://oauth.example/authorize', $linkResponse['authorization_url']);
 
         $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
 
