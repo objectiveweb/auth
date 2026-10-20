@@ -132,7 +132,7 @@ class OAuthControllerTest extends TestCase
     public function testMinimalLeagueResourceOwnerDoesNotRequireOptionalMethods(): void
     {
         $auth = new OAuthTrackingBasicAuth([], ['token' => 'token']);
-        OAuthTestProvider::$resourceOwner = new class implements \League\OAuth2\Client\Provider\ResourceOwnerInterface {
+        OAuthTestProvider::$resourceOwner = new class {
             public function getId(): string { return 'minimal-provider-subject'; }
             public function toArray(): array { return ['id' => 'minimal-provider-subject']; }
         };
@@ -161,7 +161,7 @@ class OAuthControllerTest extends TestCase
     public function testLeagueProfileArraySuppliesSafeNameAvatarAndEmailHints(): void
     {
         $auth = new OAuthTrackingBasicAuth([], ['token' => 'token']);
-        OAuthTestProvider::$resourceOwner = new class implements \League\OAuth2\Client\Provider\ResourceOwnerInterface {
+        OAuthTestProvider::$resourceOwner = new class {
             public function getId(): int { return 92735; }
             public function toArray(): array
             {
@@ -192,7 +192,7 @@ class OAuthControllerTest extends TestCase
     public function testNestedPictureAndSplitNameProfileFallbacks(): void
     {
         $auth = new BasicAuth([], ['token' => 'token']);
-        OAuthTestProvider::$resourceOwner = new class implements \League\OAuth2\Client\Provider\ResourceOwnerInterface {
+        OAuthTestProvider::$resourceOwner = new class {
             public function getId(): string { return 'nested-fields'; }
             public function toArray(): array
             {
@@ -217,7 +217,7 @@ class OAuthControllerTest extends TestCase
     public function testMalformedOrThrowingOptionalGettersSafelyFallBackToProfile(): void
     {
         $auth = new BasicAuth([], ['token' => 'token']);
-        OAuthTestProvider::$resourceOwner = new class implements \League\OAuth2\Client\Provider\ResourceOwnerInterface {
+        OAuthTestProvider::$resourceOwner = new class {
             public function getId(): string { return 'broken-optional-fields'; }
             public function getName(): string { throw new \RuntimeException('Name unavailable'); }
             public function getAvatar(): array { return ['unexpected' => 'value']; }
@@ -247,7 +247,7 @@ class OAuthControllerTest extends TestCase
     public function testUnsafeAvatarAndInvalidEmailHintsAreIgnored(): void
     {
         $auth = new BasicAuth([], ['token' => 'token']);
-        OAuthTestProvider::$resourceOwner = new class implements \League\OAuth2\Client\Provider\ResourceOwnerInterface {
+        OAuthTestProvider::$resourceOwner = new class {
             public function getId(): string { return 'unsafe-fields'; }
             public function toArray(): array
             {
@@ -274,7 +274,7 @@ class OAuthControllerTest extends TestCase
     {
         $auth = new BasicAuth([], ['token' => 'token']);
         $controller = $this->testController($auth);
-        $owner = new class implements \League\OAuth2\Client\Provider\ResourceOwnerInterface {
+        $owner = new class {
             public function getId(): array { return ['not' => 'an id']; }
             public function toArray(): array { return []; }
         };
