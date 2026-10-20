@@ -205,7 +205,7 @@ class AuthController
             $user = $this->auth->user();
             $userId = $user[$this->auth->params['id']];
             if (!$this->auth->verify_password($userId, $currentPassword)) {
-                throw new AuthException('Invalid current password', 403);
+                throw new AuthException('Invalid credentials', 401);
             }
 
             return $this->auth->passwd($userId, $password);
