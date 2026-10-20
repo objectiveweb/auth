@@ -18,17 +18,17 @@ final class AuthDbauthRelationsMigration extends AbstractMigration
             'id' => false,
             'primary_key' => ['user_id', 'role_id'],
         ])
-            ->addColumn('user_id', 'integer', ['signed' => false])
-            ->addColumn('role_id', 'integer', ['signed' => false])
+            ->addColumn('user_id', 'integer', ['signed' => false, 'null' => false])
+            ->addColumn('role_id', 'integer', ['signed' => false, 'null' => false])
             ->addIndex(['role_id'])
             ->addForeignKey('user_id', 'user', 'id')
             ->addForeignKey('role_id', 'role', 'id')
             ->create();
 
         $this->table('delegations', ['id' => false, 'primary_key' => ['user_id', 'target_user_id', 'ability']])
-            ->addColumn('user_id', 'integer', ['signed' => false])
-            ->addColumn('target_user_id', 'integer', ['signed' => false])
-            ->addColumn('ability', 'string', ['limit' => 64])
+            ->addColumn('user_id', 'integer', ['signed' => false, 'null' => false])
+            ->addColumn('target_user_id', 'integer', ['signed' => false, 'null' => false])
+            ->addColumn('ability', 'string', ['limit' => 64, 'null' => false])
             ->addIndex(['target_user_id'])
             ->create();
 
