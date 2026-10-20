@@ -2,7 +2,7 @@
 
 namespace League\OAuth2\Client\Provider;
 
-final class Test
+class Test
 {
     public static array $lastConfig = [];
     public static array $lastAuthorizationOptions = [];
@@ -45,4 +45,9 @@ final class Test
 
         return self::$resourceOwner;
     }
+}
+
+// A second provider class for cross-provider OAuth state isolation tests.
+class Other extends Test
+{
 }
