@@ -208,10 +208,10 @@ class OAuthController extends AuthController
             throw new UserException('OAuth identity is already associated with an account', 409);
         }
 
-        // Invalid passwords leave the pending identity available for retry
-        // during its limited lifetime. Successful login regenerates the
-        // session ID; the pending OAuth identity stays in the PHP session.
-        $user = $this->auth->login(trim($uid), $password);
+        // Validate ownership without authenticating the browser. A failed
+        // database link or verification must not create a logged-in session.
+        $authenticated = $this->auth->authenticate(trim($uid), $password);
+        $user = $authenticated['user'];
         $userId = $user[$this->auth->params['id']];
 
         // Do not allow a competing request to attach this OAuth identity to
@@ -226,7 +226,7 @@ class OAuthController extends AuthController
         );
         $this->auth->mark_credential_verified($userId, $pending['provider'], $pending['uid']);
         $this->auth->audit('credential.linked', $userId, ['provider' => $pending['provider']]);
-        return ['status' => 'linked', 'user' => $this->auth->user()];
+        return ['status' => 'linked', 'user' => $this->auth->establish_session($this->auth->get($userId))];
     }
 
     /**
