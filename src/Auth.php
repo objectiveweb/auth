@@ -268,12 +268,6 @@ abstract class Auth
     }
 
     /**
-     * @param $uid
-     * @param $password
-     * @throws Auth\UserException
-     * @throws Auth\AuthException
-     */
-    /**
      * Validate local login credentials without changing the authenticated session
      * or recording a login. OAuth account linking uses this before committing
      * the external identity to the account.
