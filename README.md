@@ -12,6 +12,35 @@ This package requires:
 - PHP `>=8.2`
 - `objectiveweb/db`
 
+### Pre-merge production installation check
+
+Every pull request targeting `master` runs the **Production install** job in
+[`release.yml`](.github/workflows/release.yml), using PHP 8.2 (the minimum
+supported version). This job verifies `composer validate --strict`, installs
+the library's runtime dependencies using `composer install --no-dev`, checks
+platform requirements, and executes
+[`test/verify_production_install.php`](test/verify_production_install.php).
+The smoke test confirms that the public Auth, BasicAuth, DBAuth, controller
+and database classes autoload, and that registration, login and logout work
+without PHPUnit or Phinx installed.
+
+It also installs the unreleased source into a **separate consumer project**
+with a non-symlinked Composer path repository, then repeats the smoke checks
+against that consumer's `vendor/autoload.php`. Until v0.2.0 is published, the
+path package is explicitly assigned the candidate `0.2.0` version; this
+checks real consumer autoloading and `require` dependencies without claiming
+that Packagist already serves the new release. The standard PHP test matrix
+continues running in `ci.yml`, while `release.yml` runs its additional
+full matrix only after merging or on manual dispatch.
+
+For a local no-dev check:
+
+```sh
+composer install --no-dev --prefer-dist --optimize-autoloader
+composer check-platform-reqs --no-dev
+php test/verify_production_install.php vendor/autoload.php
+```
+
 ## Providers
 
 ### `DBAuth`
