@@ -129,62 +129,6 @@ class DBAuthSqliteTest extends TestCase
         self::$db->query('DELETE FROM auth_user')->exec();
     }
 
-    public function testOAuthAccountChoiceLinksExistingUserWithSqlite(): void
-    {
-        require_once __DIR__ . '/OAuthTestProvider.php';
-        $local = self::$auth->register('sqlite-user@example.com', 'secret', [
-            'name' => 'Existing User',
-        ]);
-
-        \League\OAuth2\Client\Provider\Test::$resourceOwner = new class {
-            public function getId(): string { return 'sqlite-oauth-subject'; }
-            public function getName(): string { return 'OAuth Profile'; }
-            public function getEmail(): string { return 'sqlite-user@example.com'; }
-            public function toArray(): array { return ['id' => 'sqlite-oauth-subject']; }
-        };
-        \League\OAuth2\Client\Provider\Test::$state = 'test-oauth-state';
-
-        $controller = new class (self::$auth, [
-            'test' => [
-                'clientId' => 'test-client',
-                'clientSecret' => 'test-secret',
-                'redirectUri' => 'https://example.test/oauth/test',
-            ],
-        ]) extends \Objectiveweb\Auth\Controller\OAuthController {
-            public ?string $redirectedTo = null;
-            protected function redirect(string $location): void
-            {
-                $this->redirectedTo = $location;
-            }
-        };
-
-        $controller->get('test', []);
-        $controller->get('test', [
-            'code' => 'oauth-code', 'state' => 'test-oauth-state',
-        ]);
-        $this->assertSame('/?oauth=choose-account', $controller->redirectedTo);
-        $this->assertFalse(self::$auth->check());
-        $this->assertFalse(self::$auth->get_credential('test', 'sqlite-oauth-subject'));
-
-        $choice = $controller->getPendingAccount();
-        $_SERVER['REQUEST_METHOD'] = 'POST';
-        $_SERVER['CONTENT_TYPE'] = 'application/json';
-        $_SERVER['HTTP_X_CSRF_TOKEN'] = $choice['_csrf'];
-        $result = $controller->postExistingAccount([
-            'uid' => 'sqlite-user@example.com',
-            'password' => 'secret',
-        ]);
-        $this->assertSame('linked', $result['status']);
-        $this->assertSame($local['id'], $result['user']['id']);
-        $credential = self::$auth->get_credential('test', 'sqlite-oauth-subject');
-        $this->assertSame($local['id'], $credential['user_id']);
-        $this->assertNotEmpty($credential['verified_at']);
-        $this->assertArrayNotHasKey('oauth2pending', $_SESSION);
-        $this->assertSame(1, (int) self::$db->select(
-            'auth_user', ['id' => $local['id']]
-        )->count());
-        unset($_SERVER['REQUEST_METHOD'], $_SERVER['CONTENT_TYPE'], $_SERVER['HTTP_X_CSRF_TOKEN']);
-    }
 
     public function testRegistration(): void
     {
@@ -1273,4 +1217,59 @@ class DBAuthSqliteTest extends TestCase
         $this->assertSame(1, $result->total());
         $this->assertSame('searchable@example.com', $result[0]['credentials'][0]['uid']);
     }
+    public function testOAuthAccountChoiceLinksExistingUserWithSqlite(): void
+    {
+        require_once __DIR__ . '/OAuthTestProvider.php';
+        $local = self::$auth->register('sqlite-user@example.com', 'secret', [
+            'name' => 'Existing User',
+        ]);
+
+        \League\OAuth2\Client\Provider\Test::$resourceOwner = new class {
+            public function getId(): string { return 'sqlite-oauth-subject'; }
+            public function getName(): string { return 'OAuth Profile'; }
+            public function getEmail(): string { return 'sqlite-user@example.com'; }
+            public function toArray(): array { return ['id' => 'sqlite-oauth-subject']; }
+        };
+        \League\OAuth2\Client\Provider\Test::$state = 'test-oauth-state';
+
+        $controller = new class (self::$auth, [
+            'test' => [
+                'clientId' => 'test-client',
+                'clientSecret' => 'test-secret',
+                'redirectUri' => 'https://example.test/oauth/test',
+            ],
+        ]) extends \Objectiveweb\Auth\Controller\OAuthController {
+            public ?string $redirectedTo = null;
+            protected function redirect(string $location): void
+            {
+                $this->redirectedTo = $location;
+            }
+        };
+
+        $controller->get('test', []);
+        $controller->get('test', [
+            'code' => 'oauth-code', 'state' => 'test-oauth-state',
+        ]);
+        $this->assertSame('/?oauth=choose-account', $controller->redirectedTo);
+        $this->assertFalse(self::$auth->check());
+        $this->assertFalse(self::$auth->get_credential('test', 'sqlite-oauth-subject'));
+
+        $choice = $controller->getPendingAccount();
+        $_SERVER['REQUEST_METHOD'] = 'POST';
+        $_SERVER['CONTENT_TYPE'] = 'application/json';
+        $_SERVER['HTTP_X_CSRF_TOKEN'] = $choice['_csrf'];
+        $result = $controller->postExistingAccount([
+            'uid' => 'sqlite-user@example.com',
+            'password' => 'secret',
+        ]);
+        $this->assertSame('linked', $result['status']);
+        $this->assertSame($local['id'], $result['user']['id']);
+        $credential = self::$auth->get_credential('test', 'sqlite-oauth-subject');
+        $this->assertSame($local['id'], $credential['user_id']);
+        $this->assertNotEmpty($credential['verified_at']);
+        $this->assertArrayNotHasKey('oauth2pending', $_SESSION);
+        $this->assertCount(1, self::$db->select('auth_user')->all());
+        unset($_SERVER['REQUEST_METHOD'], $_SERVER['CONTENT_TYPE'], $_SERVER['HTTP_X_CSRF_TOKEN']);
+    }
+
 }
