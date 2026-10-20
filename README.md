@@ -447,6 +447,31 @@ $auth->passwd_reset($token, 'new-password');
 
 Anonymous password-recovery requests intentionally return the same empty success payload whether or not the supplied UID exists. Recovery callbacks are delivery-only: their return value is not exposed, and delivery failures do not change the anonymous response. **There is no built-in rate limiting in v0.2.0.** Applications must enforce external rate limits at their web server, reverse proxy, gateway, or middleware for login, public registration, recovery, reset-token redemption, and credential verification. Future non-database throttling is tracked in [issue #2](https://github.com/objectiveweb/auth/issues/2).
 
+### Database CI coverage
+
+The `CI` workflow validates the bundled Phinx migrations and DBAuth
+operations against **MySQL 8.0 and MySQL 8.4 (LTS)**, in addition to the
+existing PostgreSQL 16 migration check and SQLite unit tests. MySQL CI checks
+the migrated columns, indexes, foreign keys and InnoDB tables, then executes
+registration, login, role assignment/queries, credential verification,
+single-use password reset, pagination and deletion against MySQL.
+
+The MySQL-specific Phinx environment is `mysql_testing` in
+[`test/phinx.php`](test/phinx.php). To run locally, create an empty MySQL
+database and set `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_DATABASE`,
+`MYSQL_USER` and `MYSQL_PASSWORD` with a user able to create tables and
+indexes. Then run:
+
+```sh
+vendor/bin/phinx migrate --configuration test/phinx.php --environment mysql_testing
+vendor/bin/phinx status --configuration test/phinx.php --environment mysql_testing
+php test/verify_mysql_migrations.php
+php test/verify_mysql_auth.php
+```
+
+These test scripts **create and delete users/credentials** and require a
+dedicated empty database; do not run them against an application database.
+
 ## OAuth controller
 
 Configure OAuth providers by provider name. **Every provider must have an explicitly configured, trusted `redirectUri`** that exactly matches its callback URL registered at the provider:
