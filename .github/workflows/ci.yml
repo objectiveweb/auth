@@ -33,6 +33,40 @@ jobs:
       - name: Run tests
         run: vendor/bin/phpunit test
 
+  oauth-real-providers:
+    # Validate integration using the actual optional League provider classes
+    # without sending requests to Google/Facebook or requiring live secrets.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          coverage: none
+
+      - name: Install test dependencies
+        run: composer install --no-interaction --prefer-dist
+
+      - name: Install optional OAuth provider libraries for integration tests
+        run: |
+          composer require --dev --no-interaction --prefer-dist --no-progress \
+            'league/oauth2-google:^4.0' \
+            'league/oauth2-facebook:^2.0' \
+            'guzzlehttp/guzzle:^7.0'
+
+      - name: Assert real OAuth providers are available
+        run: |
+          php -r 'require "vendor/autoload.php"; exit(
+            class_exists("League\\OAuth2\\Client\\Provider\\Google") &&
+            class_exists("League\\OAuth2\\Client\\Provider\\Facebook") ? 0 : 1
+          );'
+
+      - name: Run real-provider OAuth integration tests
+        run: vendor/bin/phpunit test/RealOAuthProviderTest.php
+
   migrations-postgresql:
     runs-on: ubuntu-latest
 
