@@ -2,6 +2,15 @@
 
 Authentication library with pluggable providers.
 
+> **v0.2.0 is a breaking upgrade from 0.1.x.** The old PDO-based `Auth` constructor,
+> user table and controller paths are not compatible. Read the
+> [0.2.0 upgrade guide](docs/UPGRADING-0.2.0.md) before upgrading a live app.
+
+**Release documentation:** [Changelog](CHANGELOG.md) ·
+[Upgrade guide (0.1.x → 0.2.0)](docs/UPGRADING-0.2.0.md) ·
+[0.2.0 release notes and release checklist](docs/RELEASE-0.2.0.md)
+
+
 ## Install
 
 ```bash
@@ -156,6 +165,8 @@ CREATE TABLE user_credentials (
     user_id INTEGER NOT NULL,
     profile TEXT,
     token VARCHAR(255),
+    token_expires_at DATETIME,
+    verified_at DATETIME,
     last_login DATETIME,
     created DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (uid, provider),
