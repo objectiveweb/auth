@@ -49,8 +49,18 @@ class AuthMigration extends AbstractMigration
             'primary_key' => ['uid', 'provider']
         ]);
         $user_credentials
-            ->addColumn('uid', 'string', ['limit' => 255, 'null' => false])
-            ->addColumn('provider', 'string', ['limit' => 32, 'null' => false])
+            // MySQL 8 needs exact, NO PAD comparisons for OAuth subject IDs.
+            // Phinx ignores this MySQL-specific option on SQLite/PostgreSQL.
+            ->addColumn('uid', 'string', [
+                'limit' => 255,
+                'null' => false,
+                'collation' => 'utf8mb4_0900_bin',
+            ])
+            ->addColumn('provider', 'string', [
+                'limit' => 32,
+                'null' => false,
+                'collation' => 'utf8mb4_0900_bin',
+            ])
             ->addColumn('user_id', 'integer', ['signed' => false])
             ->addColumn('profile', 'text', ['null'=> true])
             ->addColumn('token', 'string', ['limit' => 255, 'null' => true])

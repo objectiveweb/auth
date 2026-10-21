@@ -140,4 +140,31 @@ $auth->delete($viewer['id']);
 $assert($auth->get_users_by_role('viewer') === [], 'Deleted user still appears in role lookup');
 $assert(count($auth->query()) === 1, 'Deleted user still appears in MySQL query');
 
+// Provider identity comparisons must remain exact even when the database's
+// default collation is case-insensitive. These are distinct OAuth subjects.
+$subjects = [
+    ['google', 'OAuthSubjectAbC'],
+    ['google', 'oauthsubjectabc'],
+    ['google', 'OAuthSubjectAbC '],
+    ['Google', 'OAuthSubjectAbC'],
+];
+$identityUserIds = [];
+foreach ($subjects as [$provider, $uid]) {
+    $user = $auth->register($uid, null, ['provider' => $provider]);
+    $identityUserIds[] = $user['id'];
+    $credential = $auth->get_credential($provider, $uid);
+    $assert(
+        $credential !== false && $credential['user_id'] == $user['id'],
+        "MySQL returned another account for {$provider}/{$uid}"
+    );
+}
+$assert(
+    count(array_unique($identityUserIds)) === count($subjects),
+    'Distinct OAuth subjects must never resolve to the same user'
+);
+$assert(
+    $auth->get_credential('google', 'OAUTHSUBJECTABC') === false,
+    'MySQL incorrectly resolved an OAuth subject using case-insensitive lookup'
+);
+
 echo "MySQL 8 DBAuth registration, roles, login, pagination, password reset, credential verification and deletion passed.\n";

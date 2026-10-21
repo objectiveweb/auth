@@ -224,6 +224,8 @@ complete email verification before treating an email as verified. Explicit
 provider registration using `DBAuth::register()` is reserved for trusted
 application code after authenticating the provider's identity.
 
+**OAuth subject matching:** The bundled MySQL 8 migration uses the case-sensitive, `NO PAD` `utf8mb4_0900_bin` collation for both `user_credentials.uid` and `provider`. OAuth subject IDs must match exactly, including case and trailing spaces. Custom schemas must enforce equivalent identity semantics. Editing this migration does **not** update tables already created by Phinx; if you've previously run it, migrate or recreate the credential table before deploying.
+
 #### Users
 
 `register()` creates the user and its initial credential transactionally. It returns a **sanitized** user. `get()` returns the provider's **raw** user record, including sensitive fields; sanitize it before exposing it to clients.
