@@ -289,7 +289,7 @@ $auth->rename_credential($userId, 'phone', '+5511999999999', 'phone', '+55118888
 $auth->delete_credential($userId, 'phone', '+5511888888888');
 ```
 
-`create_credential()` rejects duplicates; `update_credential()` inserts or updates a provider identity and updates its last-login field when configured. `delete_credential()` refuses to remove the user's last credential. Treat raw provider profiles as potentially sensitive; send normalized/sanitized credentials to clients.
+`create_credential()` rejects duplicates; `update_credential()` inserts or updates a provider identity and updates its last-login field when configured. Passing `null` as the profile **preserves existing provider metadata** (including during password login) in both `DBAuth` and `BasicAuth`; pass a non-null profile to replace it. `delete_credential()` refuses to remove the user's last credential. Treat raw provider profiles as potentially sensitive; send normalized/sanitized credentials to clients.
 
 ##### Independent credential verification
 

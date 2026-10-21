@@ -393,18 +393,25 @@ class BasicAuth extends \Objectiveweb\Auth
         }
 
         $created = $this->credentials[$provider][$uid]['created'] ?? date('Y-m-d H:i:s');
+        $updates = [
+            'user_id' => $userid,
+            'provider' => $provider,
+            'uid' => $uid,
+            'last_login' => date('Y-m-d H:i:s'),
+            'created' => $created,
+        ];
+        // A null profile means "leave unchanged", as in DBAuth. Password
+        // login passes null here and must not erase stored provider metadata.
+        if ($profile !== null) {
+            $updates['profile'] = $profile;
+        }
+
         $this->credentials[$provider][$uid] = array_merge([
             'token' => null,
             'token_expires_at' => null,
             'verified_at' => null,
-        ], $existing ?: [], [
-            'user_id' => $userid,
-            'provider' => $provider,
-            'uid' => $uid,
-            'profile' => $profile,
-            'last_login' => date('Y-m-d H:i:s'),
-            'created' => $created,
-        ]);
+            'profile' => null,
+        ], $existing ?: [], $updates);
 
         return true;
     }

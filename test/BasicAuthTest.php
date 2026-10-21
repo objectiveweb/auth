@@ -35,6 +35,58 @@ class BasicAuthTest extends TestCase
         $this->assertArrayNotHasKey('password', $user);
     }
 
+    public function testPasswordLoginPreservesExistingCredentialProfile(): void
+    {
+        $profile = ['source' => 'import', 'attributes' => ['locale' => 'pt-BR']];
+        $user = $this->auth->register('profile@example.com', 'secret', [
+            'profile' => $profile,
+        ]);
+        $original = $this->auth->get_credential('local', 'profile@example.com');
+        $this->assertSame(json_encode($profile), $original['profile']);
+        $this->assertNull($original['last_login']);
+
+        $this->auth->login('profile@example.com', 'secret');
+        $afterLogin = $this->auth->get_credential('local', 'profile@example.com');
+        $this->assertSame($original['profile'], $afterLogin['profile']);
+        $this->assertSame($original['created'], $afterLogin['created']);
+        $this->assertNotNull($afterLogin['last_login']);
+
+        $this->auth->logout();
+        $this->auth->login('profile@example.com', 'secret');
+        $this->assertSame($original['profile'], $this->auth->get_credential('local', 'profile@example.com')['profile']);
+
+        $listed = $this->auth->get_credentials($user['id']);
+        $this->assertCount(1, $listed);
+        $this->assertSame($profile, $listed[0]['profile']);
+    }
+
+    public function testNullCredentialProfileDoesNotReplaceMetadataButNonNullDoes(): void
+    {
+        $user = $this->auth->register('update-profile@example.com', 'secret');
+        $this->assertNull($this->auth->get_credential('local', 'update-profile@example.com')['profile']);
+
+        $firstProfile = ['source' => 'google', 'avatar' => 'example.png'];
+        $this->auth->update_credential($user['id'], 'local', 'update-profile@example.com', $firstProfile);
+        $this->assertSame(
+            json_encode($firstProfile),
+            $this->auth->get_credential('local', 'update-profile@example.com')['profile']
+        );
+
+        $this->auth->update_credential($user['id'], 'local', 'update-profile@example.com', null);
+        $this->assertSame(
+            json_encode($firstProfile),
+            $this->auth->get_credential('local', 'update-profile@example.com')['profile']
+        );
+
+        $replacement = ['source' => 'manual'];
+        $this->auth->update_credential($user['id'], 'local', 'update-profile@example.com', $replacement);
+        $this->assertSame(
+            json_encode($replacement),
+            $this->auth->get_credential('local', 'update-profile@example.com')['profile']
+        );
+        $this->assertSame($replacement, $this->auth->get_credentials($user['id'])[0]['profile']);
+    }
+
     public function testLoginInvalidPassword(): void
     {
         $this->expectException(AuthException::class);
