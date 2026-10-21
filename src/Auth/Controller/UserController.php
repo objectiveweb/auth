@@ -17,6 +17,7 @@ use Objectiveweb\Router\Middleware;
  * GET    /api/users/12
  * POST   /api/users
  * PUT    /api/users/12
+ * DELETE /api/users/12
  * POST   /api/users/12/credentials
  * PUT    /api/users/12/credentials
  * DELETE /api/users/12/credentials/local/name@example.com
@@ -105,6 +106,12 @@ class UserController
             $this->auth->delete_credential($userId, $provider, $uid);
             $this->auth->audit('credential.deleted', $userId, ['provider' => $provider]);
             return ['ok' => true];
+        }
+
+        // Only the base user endpoint may delete an account. Unknown or
+        // partially matched subresource paths must never fall through here.
+        if ($resource !== null || $provider !== null || $uid !== null) {
+            throw new UserException('Invalid user action', 404);
         }
 
         $this->assertNotSelf($userId, 'delete');

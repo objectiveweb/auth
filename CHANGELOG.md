@@ -38,7 +38,7 @@ All notable changes to `objectiveweb/auth` are documented here. This project fol
 - Consume password reset and credential-verification tokens at most once; separate proof for each provider credential.
 - Prevent OAuth login CSRF, state replay, cross-provider state confusion, unconsented linking, email-based account takeover and cross-account credential reassignment.
 - Restrict logout redirects to safe same-origin absolute paths and reject attacker-controlled OAuth callback URLs.
-- Enforce management CSRF checks, prevent removal of the last active admin and protect the caller from self-deletion/suspension.
+- Enforce management CSRF checks, prevent removal of the last active admin and protect the caller from self-deletion/suspension. Reject unknown DELETE subresources with 404 instead of accidentally deleting the user.
 - Avoid returning passwords, reset tokens or other internal secrets in normal user/session/management payloads.
 
 ### Removed / incompatible
