@@ -671,6 +671,41 @@ class DBAuthSqliteTest extends TestCase
         }
     }
 
+    public function testAnonymousRecoveryUsesOnlyVerifiedDbAuthCredentials(): void
+    {
+        $user = self::$auth->register('db-recovery@example.com', 'secret');
+        $controller = new AuthController(self::$auth);
+        $deliveries = [];
+        $previousCallback = self::$auth->params['token_callback'];
+        self::$auth->params['token_callback'] = static function (array $credential) use (&$deliveries): void {
+            $deliveries[] = $credential;
+        };
+
+        try {
+            $existingToken = self::$auth->update_token($user['id']);
+            $existingDigest = self::$auth->get($user['id'])['token'];
+
+            $this->assertSame([], $controller->postPassword(['uid' => 'db-recovery@example.com']));
+            $this->assertSame([], $controller->postPassword(['uid' => 'unknown@example.com']));
+            $this->assertSame([], $deliveries);
+            $this->assertSame($existingDigest, self::$auth->get($user['id'])['token']);
+
+            $proof = self::$auth->issue_credential_token($user['id'], 'local', 'db-recovery@example.com');
+            $this->assertTrue(self::$auth->verify_credential_token('local', 'db-recovery@example.com', $proof));
+
+            $this->assertSame([], $controller->postPassword(['uid' => 'db-recovery@example.com']));
+            $this->assertCount(1, $deliveries);
+            $this->assertSame('local', $deliveries[0]['provider']);
+            $this->assertNotSame($existingToken, $deliveries[0]['token']);
+            $this->assertSame(
+                hash('sha256', $deliveries[0]['token']),
+                self::$auth->get($user['id'])['token']
+            );
+        } finally {
+            self::$auth->params['token_callback'] = $previousCallback;
+        }
+    }
+
     public function testAuthControllerResponsesDoNotExposeUserSecrets(): void
     {
         $controller = new AuthController(self::$auth);

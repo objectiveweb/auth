@@ -343,7 +343,8 @@ class AuthControllerTest extends TestCase
             'token_callback' => fn (): array => ['account_exists' => true],
         ]);
         $controller = new AuthController($auth);
-        $auth->register('alice@example.com', 'secret', ['provider' => 'email']);
+        $user = $auth->register('alice@example.com', 'secret', ['provider' => 'email']);
+        $auth->mark_credential_verified($user['id'], 'email', 'alice@example.com');
 
         $result = $controller->postPassword(['uid' => 'alice@example.com']);
 
@@ -359,7 +360,8 @@ class AuthControllerTest extends TestCase
             },
         ]);
         $controller = new AuthController($auth);
-        $auth->register('alice@example.com', 'secret', ['provider' => 'email']);
+        $user = $auth->register('alice@example.com', 'secret', ['provider' => 'email']);
+        $auth->mark_credential_verified($user['id'], 'email', 'alice@example.com');
 
         $result = $controller->postPassword(['uid' => 'alice@example.com']);
 
@@ -379,7 +381,8 @@ class AuthControllerTest extends TestCase
                 );
             },
         ]);
-        $auth->register('private@example.com', 'secret', ['provider' => 'email']);
+        $user = $auth->register('private@example.com', 'secret', ['provider' => 'email']);
+        $auth->mark_credential_verified($user['id'], 'email', 'private@example.com');
         $controller = new AuthController($auth);
 
         $logFile = tempnam(sys_get_temp_dir(), 'ow-auth-recovery-');
@@ -410,7 +413,8 @@ class AuthControllerTest extends TestCase
         $auth = new BasicAuth([], ['token' => 'token']);
         $controller = new AuthController($auth);
 
-        $auth->register('alice@example.com', 'secret', ['provider' => 'email']);
+        $user = $auth->register('alice@example.com', 'secret', ['provider' => 'email']);
+        $auth->mark_credential_verified($user['id'], 'email', 'alice@example.com');
         $result = $controller->postPassword(['uid' => 'alice@example.com']);
 
         $this->assertSame([], $result);
@@ -421,7 +425,8 @@ class AuthControllerTest extends TestCase
         $auth = new BasicAuth([], ['token' => 'token']);
         $controller = new AuthController($auth);
 
-        $auth->register('+5511999999999', 'secret', ['provider' => 'phone']);
+        $user = $auth->register('+5511999999999', 'secret', ['provider' => 'phone']);
+        $auth->mark_credential_verified($user['id'], 'phone', '+5511999999999');
         $result = $controller->postPassword(['uid' => '+5511999999999']);
 
         $this->assertSame([], $result);
@@ -432,10 +437,64 @@ class AuthControllerTest extends TestCase
         $auth = new BasicAuth([], ['token' => 'token']);
         $controller = new AuthController($auth);
 
-        $auth->register('local@example.com', 'secret', ['provider' => 'local']);
+        $user = $auth->register('local@example.com', 'secret', ['provider' => 'local']);
+        $auth->mark_credential_verified($user['id'], 'local', 'local@example.com');
         $result = $controller->postPassword(['uid' => 'local@example.com']);
 
         $this->assertSame([], $result);
+    }
+
+    public function testAnonymousRecoveryRejectsUnverifiedLocalWithoutRotatingResetToken(): void
+    {
+        $deliveries = [];
+        $auth = new BasicAuth([], [
+            'token' => 'token',
+            'token_callback' => static function (array $credential) use (&$deliveries): void {
+                $deliveries[] = $credential;
+            },
+        ]);
+        $user = $auth->register('legacy@example.com', 'secret');
+        $controller = new AuthController($auth);
+
+        // An admin-issued invitation/reset token must not be replaced by
+        // anonymous recovery to an unverified local identifier.
+        $existingToken = $auth->update_token($user['id']);
+        $existingDigest = $auth->get($user['id'])['token'];
+
+        $this->assertSame([], $controller->postPassword(['uid' => 'legacy@example.com']));
+        $this->assertSame([], $controller->postPassword(['uid' => 'missing@example.com']));
+        $this->assertSame([], $deliveries);
+        $this->assertSame($existingDigest, $auth->get($user['id'])['token']);
+
+        // Recovery becomes available only after independent channel proof.
+        $proof = $auth->issue_credential_token($user['id'], 'local', 'legacy@example.com');
+        $this->assertTrue($auth->verify_credential_token('local', 'legacy@example.com', $proof));
+        $this->assertSame([], $controller->postPassword(['uid' => 'legacy@example.com']));
+        $this->assertCount(1, $deliveries);
+        $this->assertSame('local', $deliveries[0]['provider']);
+        $this->assertNotSame($existingToken, $deliveries[0]['token']);
+        $this->assertTrue(password_verify($deliveries[0]['token'], $auth->get($user['id'])['token']));
+    }
+
+    public function testAnonymousRecoverySkipsUnverifiedLocalInFavorOfVerifiedEmail(): void
+    {
+        $deliveries = [];
+        $auth = new BasicAuth([], [
+            'token' => 'token',
+            'token_callback' => static function (array $credential) use (&$deliveries): void {
+                $deliveries[] = $credential;
+            },
+        ]);
+        $user = $auth->register('shared@example.com', 'secret');
+        $auth->create_credential($user['id'], 'email', 'shared@example.com');
+        $proof = $auth->issue_credential_token($user['id'], 'email', 'shared@example.com');
+        $this->assertTrue($auth->verify_credential_token('email', 'shared@example.com', $proof));
+        $this->assertNull($auth->get_credential('local', 'shared@example.com')['verified_at']);
+
+        $controller = new AuthController($auth);
+        $this->assertSame([], $controller->postPassword(['uid' => 'shared@example.com']));
+        $this->assertCount(1, $deliveries);
+        $this->assertSame('email', $deliveries[0]['provider']);
     }
 
     public function testPublicRegistrationCreatesOnlyLocalCredential(): void

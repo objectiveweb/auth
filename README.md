@@ -108,7 +108,7 @@ These options come from both the shared `Auth` contract and `DBAuth`. Set only t
 | `credentials_table` | `user_credentials` | Logical provider-credential table |
 | `credentials_last_login` / `credentials_created` | `last_login` / `created` | Credential timestamp columns; `null` disables updates |
 | `login_providers` | `['local', 'email']` | Ordered provider identities considered for password login |
-| `recovery_providers` | `['local', 'email', 'phone']` | Provider identities checked for anonymous recovery |
+| `recovery_providers` | `['local', 'email', 'phone']` | Ordered recovery channels; only credentials with `verified_at` are eligible |
 | `token` | `null` | User-table reset-token field; use `'token'` to enable |
 | `token_expires_field` / `token_ttl` | `token_expires_at` / `3600` | Reset-token expiry column and lifetime in seconds |
 | `disabled_at` | `null` | Nullable suspension column; use `'disabled_at'` to enable lifecycle checks |
@@ -492,7 +492,9 @@ $auth->passwd_reset($token, 'new-password');
 
 `DBAuth` stores only a SHA-256 digest of the high-entropy reset token and looks it up through the indexed token column. The plaintext token is returned only once for delivery.
 
-Anonymous password-recovery requests intentionally return the same empty success payload whether or not the supplied UID exists. Recovery callbacks are delivery-only: their return value is not exposed, and delivery failures do not change the anonymous response. **There is no built-in rate limiting in v0.2.0.** Applications must enforce external rate limits at their web server, reverse proxy, gateway, or middleware for login, public registration, recovery, reset-token redemption, and credential verification. Future non-database throttling is tracked in [issue #2](https://github.com/objectiveweb/auth/issues/2).
+Anonymous password recovery uses **only independently verified** credentials (`verified_at` is set), including for the default `local`, `email` and `phone` providers. An unverified contact method cannot request an account-wide reset token; if multiple configured providers have the same UID, the first **verified** credential is selected. Password login alone does not verify control of the recovery address. Newly registered local credentials therefore cannot use anonymous recovery until their address is verified through `issue_credential_token()` / `postVerifyCredential()` or other trusted out-of-band proof. Legacy local credentials imported with `verified_at = NULL` likewise cannot recover anonymously; do not bulk-mark them verified without evidence of ownership. An admin-initiated `Auth::invite()` or reset remains a separate trusted operation and must be delivered only via an independently trusted channel.
+
+Anonymous password-recovery requests intentionally return the same empty success payload whether or not the supplied UID exists or is verified. Recovery callbacks are delivery-only: their return value is not exposed, and delivery failures do not change the anonymous response. **There is no built-in rate limiting in v0.2.0.** Applications must enforce external rate limits at their web server, reverse proxy, gateway, or middleware for login, public registration, recovery, reset-token redemption, and credential verification. Future non-database throttling is tracked in [issue #2](https://github.com/objectiveweb/auth/issues/2).
 
 ### Database CI coverage
 

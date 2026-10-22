@@ -90,6 +90,8 @@ A **migration script that you write and test** should apply the following mappin
 
 **Data migration order:** import user rows; verify ID/UUID uniqueness; import linked `local` credentials; migrate or remap application foreign keys; import the intended role memberships; migrate any Auth-owned delegations; then run validation queries. Do this in a controlled transaction where the database/schema permits it, and stop deployment on conflicts.
 
+**Recovery verification during migration:** Anonymous password recovery requires `user_credentials.verified_at` for every recovery provider, including `local`. Imported local credentials with `verified_at = NULL` can still use password login but cannot initiate anonymous recovery until the recovery address is independently verified. Preserve evidence of verified contacts during migration; do not assume that knowing an old password or storing an email address verifies ownership. Provide an out-of-band verification flow for new and legacy accounts, or use a trusted administrator-initiated invitation/reset delivered over an already trusted channel.
+
 Preserving an existing bcrypt hash allows a password user to sign in without knowing the plaintext. But a legacy username like `jdoe` will not automatically work with the new public registration endpoint, which requires an email-formatted UID. Choose and document your application's identity/registration strategy before launch. Password login itself checks configured `login_providers` (default `['local', 'email']`).
 
 If you preserve numeric `id` values, also reset the auto-increment/identity sequence for the migrated user table above the maximum imported ID before any new registration. Migrate and verify application-side FKs before enabling deletes, and confirm the DBAuth default table names or configured aliases resolve to the intended physical tables.
@@ -132,6 +134,7 @@ Before merging/upgrading, check:
 - [ ] Old/new user counts match; preserved IDs and all application foreign keys resolve correctly.
 - [ ] Every old password identity maps to exactly one `local` credential and bcrypt login works.
 - [ ] Old password-reset tokens are invalid; new reset and credential-specific verification tokens are one-time and expire.
+- [ ] Anonymous recovery works only through independently verified credentials; imported local accounts with unverified recovery addresses have a documented verification or trusted-admin recovery process.
 - [ ] List/search pagination, role assignment and active-admin safeguards behave as expected.
 - [ ] Existing sessions are invalidated; password changes require current password and CSRF.
 - [ ] OAuth registered redirect URIs, first-time account choice, existing-account linking, returning-login and link-conflict cases work with **your** providers.
