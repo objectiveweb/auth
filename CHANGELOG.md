@@ -38,6 +38,7 @@ All notable changes to `objectiveweb/auth` are documented here. This project fol
 - Prevent account enumeration through password-login errors and anonymous password-recovery responses.
 - Allow anonymous password recovery only through independently verified credential channels (including local), preventing reset delivery to unverified emails/phone numbers; preserve generic responses and trusted administrator invitation/reset workflows.
 - Consume password reset and credential-verification tokens at most once; separate proof for each provider credential.
+- Revoke outstanding password-reset tokens and expirations whenever a user password is changed, atomically with the password hash update on DBAuth.
 - Prevent OAuth login CSRF, state replay, cross-provider state confusion, unconsented linking, email-based account takeover and cross-account credential reassignment.
 - Restrict logout redirects to safe same-origin absolute paths and reject attacker-controlled OAuth callback URLs.
 - Enforce management CSRF checks, prevent removal of the last active admin and protect the caller from self-deletion/suspension. Reject unknown DELETE subresources with 404 instead of accidentally deleting the user.

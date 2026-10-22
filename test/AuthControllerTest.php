@@ -241,7 +241,8 @@ class AuthControllerTest extends TestCase
 
     public function testAuthenticatedPasswordChangeSucceedsAndRequiresNewPasswordOnNextLogin(): void
     {
-        $this->auth->register('alice@example.com', 'old-secret');
+        $user = $this->auth->register('alice@example.com', 'old-secret');
+        $resetToken = $this->auth->update_token($user['id']);
         $this->auth->login('alice@example.com', 'old-secret');
 
         $current = $this->controller->index();
@@ -253,6 +254,16 @@ class AuthControllerTest extends TestCase
             'password' => 'new-secret',
             'confirm' => 'new-secret',
         ]));
+
+        $changed = $this->auth->get($user['id']);
+        $this->assertNull($changed['token']);
+        $this->assertNull($changed['token_expires_at']);
+        try {
+            $this->auth->passwd_reset($resetToken, 'stale-reset-secret');
+            $this->fail('Authenticated password change left a reset token active');
+        } catch (UserException $exception) {
+            $this->assertSame(404, $exception->getCode());
+        }
 
         $this->auth->logout();
         try {

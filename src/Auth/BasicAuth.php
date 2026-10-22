@@ -176,7 +176,18 @@ class BasicAuth extends \Objectiveweb\Auth
             throw new UserException('User not found', 404);
         }
 
-        $this->users[$resolved][$this->params['password']] = self::hash($password);
+        $changes = [$this->params['password'] => self::hash($password)];
+        $tokenField = $this->params['token'];
+        if (is_string($tokenField) && $tokenField !== '') {
+            $changes[$tokenField] = null;
+            $expiresField = $this->params['token_expires_field'];
+            if (is_string($expiresField) && $expiresField !== '') {
+                $changes[$expiresField] = null;
+            }
+        }
+
+        // Apply password replacement and reset-token revocation together.
+        $this->users[$resolved] = array_replace($this->users[$resolved], $changes);
         return true;
     }
 

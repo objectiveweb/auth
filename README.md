@@ -490,6 +490,8 @@ $token = $auth->update_token($credential['user_id']);
 $auth->passwd_reset($token, 'new-password');
 ```
 
+Direct password changes through `passwd($userId, $newPassword)` (including authenticated `AuthController::postPassword()`) revoke any outstanding user password-reset token and its expiry. `DBAuth` changes these fields in one SQL `UPDATE` so a previously issued reset link cannot overwrite the new password. This is separate from credential-verification tokens.
+
 `DBAuth` stores only a SHA-256 digest of the high-entropy reset token and looks it up through the indexed token column. The plaintext token is returned only once for delivery.
 
 Anonymous password recovery uses **only independently verified** credentials (`verified_at` is set), including for the default `local`, `email` and `phone` providers. An unverified contact method cannot request an account-wide reset token; if multiple configured providers have the same UID, the first **verified** credential is selected. Password login alone does not verify control of the recovery address. Newly registered local credentials therefore cannot use anonymous recovery until their address is verified through `issue_credential_token()` / `postVerifyCredential()` or other trusted out-of-band proof. Legacy local credentials imported with `verified_at = NULL` likewise cannot recover anonymously; do not bulk-mark them verified without evidence of ownership. An admin-initiated `Auth::invite()` or reset remains a separate trusted operation and must be delivered only via an independently trusted channel.

@@ -106,6 +106,21 @@ $expectFailure(
 $auth->login('mysql-admin@example.com', 'replacement-secret');
 $auth->logout();
 
+// Direct password updates must invalidate any previously issued reset link
+// in the same SQL statement, without leaving a usable stale token.
+$pendingReset = $auth->update_token($admin['id']);
+$auth->passwd($admin['id'], 'changed-by-user-secret');
+$stored = $db->select('user', ['id' => $admin['id']], ['limit' => 1])->fetch();
+$assert($stored['token'] === null && $stored['token_expires_at'] === null,
+    'Password change did not revoke the outstanding reset token');
+$expectFailure(
+    static fn () => $auth->passwd_reset($pendingReset, 'stale-reset-secret'),
+    UserException::class,
+    404
+);
+$auth->login('mysql-admin@example.com', 'changed-by-user-secret');
+$auth->logout();
+
 // Each credential has its own token, expiration and verification state.
 $credential = $auth->create_credential($admin['id'], 'email', 'admin-contact@example.com');
 $assert(empty($credential['verified_at']), 'New email credential should be unverified');

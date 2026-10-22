@@ -364,9 +364,23 @@ class DBAuth extends \Objectiveweb\Auth
     public function passwd($user_id, $password, $key = 'id')
     {
         $column = $this->params[$key] ?? $key;
+        $payload = [$this->params['password'] => self::hash($password)];
+
+        // Changing a password must also revoke outstanding reset links.
+        // Commit all fields in one UPDATE so a concurrent token redemption
+        // cannot later overwrite the newly chosen password.
+        $tokenField = $this->params['token'];
+        if (is_string($tokenField) && $tokenField !== '') {
+            $payload[$tokenField] = null;
+            $expiresField = $this->params['token_expires_field'];
+            if (is_string($expiresField) && $expiresField !== '') {
+                $payload[$expiresField] = null;
+            }
+        }
+
         $updated = $this->userTable->update(
             [$column => $user_id],
-            [$this->params['password'] => self::hash($password)]
+            $payload
         )['updated'];
 
         if ($updated !== 1) {

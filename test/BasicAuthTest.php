@@ -127,6 +127,30 @@ class BasicAuthTest extends TestCase
         $this->assertSame($user['id'], $credential['user_id']);
     }
 
+    public function testPasswdInvalidatesOutstandingResetToken(): void
+    {
+        $credential = $this->auth->get_credential('local', 'alice@example.com');
+        $userId = $credential['user_id'];
+        $token = $this->auth->update_token($userId);
+        $this->assertNotNull($this->auth->get($userId)['token']);
+        $this->assertNotNull($this->auth->get($userId)['token_expires_at']);
+
+        $this->assertTrue($this->auth->passwd($userId, 'changed-secret'));
+        $updated = $this->auth->get($userId);
+        $this->assertTrue(password_verify('changed-secret', $updated['password']));
+        $this->assertNull($updated['token']);
+        $this->assertNull($updated['token_expires_at']);
+
+        try {
+            $this->auth->passwd_reset($token, 'stale-reset-secret');
+            $this->fail('Password reset token survived a direct password change');
+        } catch (UserException $exception) {
+            $this->assertSame(404, $exception->getCode());
+        }
+
+        $this->assertSame($userId, $this->auth->login('alice@example.com', 'changed-secret')['id']);
+    }
+
     public function testPasswordResetFlow(): void
     {
         $credential = $this->auth->get_credential('local', 'alice@example.com');

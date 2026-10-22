@@ -296,6 +296,31 @@ class DBAuthSqliteTest extends TestCase
         $this->assertSame($user['id'], $logged['id']);
     }
 
+    public function testPasswdInvalidatesOutstandingResetToken(): void
+    {
+        $user = self::$auth->register('revoke-reset@example.com', 'original-secret');
+        $token = self::$auth->update_token($user['id']);
+        $before = self::$auth->get($user['id']);
+        $this->assertSame(hash('sha256', $token), $before['token']);
+        $this->assertNotNull($before['token_expires_at']);
+
+        $this->assertTrue(self::$auth->passwd($user['id'], 'changed-secret'));
+        $after = self::$auth->get($user['id']);
+        $this->assertTrue(password_verify('changed-secret', $after['password']));
+        $this->assertNull($after['token']);
+        $this->assertNull($after['token_expires_at']);
+
+        try {
+            self::$auth->passwd_reset($token, 'should-not-work');
+            $this->fail('A reset link issued before password change was accepted');
+        } catch (UserException $exception) {
+            $this->assertSame(404, $exception->getCode());
+        }
+
+        $this->assertSame($user['id'], self::$auth->login('revoke-reset@example.com', 'changed-secret')['id']);
+        $this->assertTrue(password_verify('changed-secret', self::$auth->get($user['id'])['password']));
+    }
+
     public function testUpdate(): void
     {
         $user = self::$auth->register('alice@example.com', 'secret', ['name' => 'Alice']);
@@ -634,6 +659,7 @@ class DBAuthSqliteTest extends TestCase
     public function testDbAuthAuthenticatedPasswordChangeVerifiesCurrentPassword(): void
     {
         $user = self::$auth->register('db-password-change@example.com', 'old-secret');
+        $outstandingReset = self::$auth->update_token($user['id']);
         self::$auth->login('db-password-change@example.com', 'old-secret');
         $controller = new AuthController(self::$auth);
 
@@ -658,7 +684,16 @@ class DBAuthSqliteTest extends TestCase
                 'password' => 'new-secret',
                 'confirm' => 'new-secret',
             ]));
-            $this->assertTrue(password_verify('new-secret', self::$auth->get($user['id'])['password']));
+            $updated = self::$auth->get($user['id']);
+            $this->assertTrue(password_verify('new-secret', $updated['password']));
+            $this->assertNull($updated['token']);
+            $this->assertNull($updated['token_expires_at']);
+            try {
+                self::$auth->passwd_reset($outstandingReset, 'stale-reset-secret');
+                $this->fail('Authenticated password change left a reset token active');
+            } catch (UserException $exception) {
+                $this->assertSame(404, $exception->getCode());
+            }
 
             self::$auth->logout();
             $this->assertSame($user['id'], self::$auth->login('db-password-change@example.com', 'new-secret')['id']);
