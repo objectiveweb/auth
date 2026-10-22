@@ -439,6 +439,16 @@ abstract class Auth
     abstract public function delete($user_id);
 
     /**
+     * Execute an administrator mutation inside a provider-specific guard.
+     * Database-backed providers must serialize administrator removals so
+     * the active-admin invariant is checked against current locked data.
+     */
+    public function with_admin_mutation(callable $mutation): mixed
+    {
+        return $mutation();
+    }
+
+    /**
      * Generates a new token for the user and update the database
      * @param $user_id
      * @return string new token

@@ -115,16 +115,18 @@ class UserController
         }
 
         $this->assertNotSelf($userId, 'delete');
-        $target = $this->auth->get($userId);
-        $this->assertNotFinalActiveAdmin($target);
-        try {
-            $this->auth->delete($userId);
-        } catch (UserException $exception) {
-            throw $exception;
-        } catch (\Throwable $exception) {
-            throw new UserException('User has application history; suspend the account instead', 409, $exception);
-        }
-        return ['ok' => true];
+        return $this->auth->with_admin_mutation(function () use ($userId): array {
+            $target = $this->auth->get($userId);
+            $this->assertNotFinalActiveAdmin($target);
+            try {
+                $this->auth->delete($userId);
+            } catch (UserException $exception) {
+                throw $exception;
+            } catch (\Throwable $exception) {
+                throw new UserException('User has application history; suspend the account instead', 409, $exception);
+            }
+            return ['ok' => true];
+        });
     }
 
     private function list(array $params): Collection
@@ -186,7 +188,6 @@ class UserController
 
     private function updateUser(mixed $userId, array $data): array
     {
-        $target = $this->auth->get($userId);
         $this->assertNoApplicationRelations($data);
         unset($data['uid'], $data[$this->auth->params['password']]);
         $this->assertWriteFields($data);
@@ -194,17 +195,35 @@ class UserController
         $roleField = $this->auth->params['roles'];
         if (array_key_exists($roleField, $data)) {
             $this->assertRolePayload($data[$roleField]);
-            $roles = $data[$roleField];
-            $this->assertKnownRoles($roles);
-            $this->assertOwnAdminRolePreserved($userId, $roles);
-            if (in_array('admin', (array) ($target[$roleField] ?? []), true) && !in_array('admin', $roles, true)) {
-                $this->assertNotFinalActiveAdmin($target);
-            }
+            $this->assertKnownRoles($data[$roleField]);
         }
 
-        $this->auth->update($userId, $data);
-        $this->auth->audit('user.updated', $userId, ['fields' => array_keys($data)]);
-        return $this->detail($userId);
+        return $this->auth->with_admin_mutation(function () use ($userId, $data, $roleField): array {
+            // Reload after obtaining the shared lock: pre-lock reads can be
+            // stale once a competing administrator mutation has committed.
+            $target = $this->auth->get($userId);
+            if (array_key_exists($roleField, $data)) {
+                $this->assertOwnAdminRolePreserved($userId, $data[$roleField]);
+            }
+
+            // PUT may change disabled_at directly, bypassing POST /suspend.
+            // Both demotion and direct suspension must preserve the last admin.
+            $proposed = array_replace($target, $data);
+            if (
+                in_array('admin', (array) ($target[$roleField] ?? []), true)
+                && $this->auth->is_active($target)
+                && (
+                    !in_array('admin', (array) ($proposed[$roleField] ?? []), true)
+                    || !$this->auth->is_active($proposed)
+                )
+            ) {
+                $this->assertNotFinalActiveAdmin($target);
+            }
+
+            $this->auth->update($userId, $data);
+            $this->auth->audit('user.updated', $userId, ['fields' => array_keys($data)]);
+            return $this->detail($userId);
+        });
     }
 
     private function createCredential(mixed $userId, array $data): array
@@ -240,11 +259,16 @@ class UserController
         }
         if ($suspended) {
             $this->assertNotSelf($userId, 'suspend');
-            $this->assertNotFinalActiveAdmin($this->auth->get($userId));
         }
-        $this->auth->update($userId, [$field => $suspended ? date('Y-m-d H:i:s') : null]);
-        $this->auth->audit($suspended ? 'user.suspended' : 'user.activated', $userId);
-        return $this->detail($userId);
+
+        return $this->auth->with_admin_mutation(function () use ($userId, $field, $suspended): array {
+            if ($suspended) {
+                $this->assertNotFinalActiveAdmin($this->auth->get($userId));
+            }
+            $this->auth->update($userId, [$field => $suspended ? date('Y-m-d H:i:s') : null]);
+            $this->auth->audit($suspended ? 'user.suspended' : 'user.activated', $userId);
+            return $this->detail($userId);
+        });
     }
 
     private function sendToken(mixed $userId, bool $reset): array

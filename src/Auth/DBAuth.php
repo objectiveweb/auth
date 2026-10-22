@@ -492,6 +492,31 @@ class DBAuth extends \Objectiveweb\Auth
         });
     }
 
+    /**
+     * Use the same stable role row for every potentially admin-removing
+     * mutation. The no-op UPDATE takes a row lock in MySQL/PostgreSQL and a
+     * write lock in SQLite. Unlike FOR UPDATE, it works on all supported
+     * engines, and DB::update handles configured table prefixes.
+     *
+     * The caller must read the target and count active administrators only
+     * after this lock has been acquired.
+     */
+    public function with_admin_mutation(callable $mutation): mixed
+    {
+        return $this->db->transaction(function (DB $db) use ($mutation): mixed {
+            if ($this->rolesEnabled()) {
+                $roleField = (string) $this->params['role_name'];
+                $db->update(
+                    (string) $this->params['roles_table'],
+                    [$roleField => 'admin'],
+                    [$roleField => 'admin']
+                );
+            }
+
+            return $mutation();
+        });
+    }
+
     public function delete($user_id)
     {
         if ($this->check()) {

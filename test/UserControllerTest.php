@@ -285,6 +285,120 @@ class UserControllerTest extends TestCase
         $controller->post((int) $activeAdmin['id'], 'suspend');
     }
 
+    public function testFinalAdminGuardCoversSuspendDemoteDeleteAndDirectDisable(): void
+    {
+        self::$db->insert('auth_role', ['name' => 'admin']);
+        $auth = new DBAuth(self::$db, [
+            'table' => 'auth_user',
+            'credentials_table' => 'auth_credentials',
+            'created' => 'created',
+            'token' => 'token',
+            'credentials_last_login' => 'last_login',
+            'credentials_created' => null,
+            'disabled_at' => 'disabled_at',
+            'roles_table' => 'auth_role',
+            'user_roles_table' => 'auth_user_role',
+        ]);
+        $controller = new UserController($auth);
+        $admin = $auth->register('sole-admin@example.com', 'secret', ['roles' => ['admin']]);
+        $id = (int) $admin['id'];
+
+        $mutations = [
+            static fn () => $controller->post($id, 'suspend'),
+            static fn () => $controller->put($id, ['roles' => []]),
+            static fn () => $controller->put($id, ['disabled_at' => '2026-01-01 00:00:00']),
+            static fn () => $controller->put($id, ['roles' => [], 'disabled_at' => '2026-01-01 00:00:00']),
+            static fn () => $controller->delete($id),
+        ];
+        foreach ($mutations as $mutate) {
+            try {
+                $mutate();
+                $this->fail('A mutation removed the final active administrator');
+            } catch (\Objectiveweb\Auth\UserException $exception) {
+                $this->assertSame(409, $exception->getCode());
+            }
+            $stillAdmin = $auth->get($id);
+            $this->assertTrue($auth->is_active($stillAdmin));
+            $this->assertContains('admin', $stillAdmin['roles']);
+        }
+    }
+
+    public function testReducingTwoActiveAdminsToOnePreventsFurtherRemoval(): void
+    {
+        self::$db->insert('auth_role', ['name' => 'admin']);
+        $auth = new DBAuth(self::$db, [
+            'table' => 'auth_user',
+            'credentials_table' => 'auth_credentials',
+            'created' => 'created',
+            'token' => 'token',
+            'credentials_last_login' => 'last_login',
+            'credentials_created' => null,
+            'disabled_at' => 'disabled_at',
+            'roles_table' => 'auth_role',
+            'user_roles_table' => 'auth_user_role',
+        ]);
+        $controller = new UserController($auth);
+        $first = $auth->register('first-admin@example.com', 'secret', ['roles' => ['admin']]);
+        $second = $auth->register('second-admin@example.com', 'secret', ['roles' => ['admin']]);
+
+        $this->assertSame(['ok' => true], $controller->delete((int) $first['id']));
+        $this->assertCount(1, array_filter(
+            $auth->get_users_by_role('admin'),
+            static fn (array $user): bool => $auth->is_active($user)
+        ));
+        try {
+            $controller->post((int) $second['id'], 'suspend');
+            $this->fail('A second operation removed the last active admin');
+        } catch (\Objectiveweb\Auth\UserException $exception) {
+            $this->assertSame(409, $exception->getCode());
+        }
+        $this->assertTrue($auth->is_active($auth->get($second['id'])));
+    }
+
+    /**
+     * Model a competing transaction committed before the role lock is
+     * acquired. The count must not be read or cached outside the lock.
+     */
+    public function testAdminGuardReloadsActiveCountAfterAcquiringLock(): void
+    {
+        $db = new class('sqlite::memory:') extends DB {
+            public ?\Closure $beforeRoleLock = null;
+            public function update(string $table, array $data, ?array $where = null): int
+            {
+                if ($table === 'role' && $this->beforeRoleLock !== null) {
+                    $callback = $this->beforeRoleLock;
+                    $this->beforeRoleLock = null;
+                    $callback();
+                }
+                return parent::update($table, $data, $where);
+            }
+        };
+        $db->query('CREATE TABLE user (id INTEGER PRIMARY KEY AUTOINCREMENT, uuid TEXT NOT NULL UNIQUE, name TEXT, password TEXT, disabled_at TEXT)')->exec();
+        $db->query('CREATE TABLE user_credentials (uid TEXT NOT NULL, provider TEXT NOT NULL, user_id INTEGER NOT NULL, profile TEXT, token TEXT, token_expires_at TEXT, verified_at TEXT, last_login TEXT, created TEXT, PRIMARY KEY(uid, provider))')->exec();
+        $db->query('CREATE TABLE role (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE)')->exec();
+        $db->query('CREATE TABLE user_roles (user_id INTEGER NOT NULL, role_id INTEGER NOT NULL, PRIMARY KEY(user_id, role_id))')->exec();
+        $db->insert('role', ['id' => 1, 'name' => 'admin']);
+
+        $auth = new DBAuth($db, ['disabled_at' => 'disabled_at', 'created' => null]);
+        $controller = new UserController($auth);
+        $first = $auth->register('race-first@example.com', 'secret', ['roles' => ['admin']]);
+        $second = $auth->register('race-second@example.com', 'secret', ['roles' => ['admin']]);
+
+        $db->beforeRoleLock = static function () use ($db, $first): void {
+            $db->delete('user_roles', ['user_id' => $first['id']]);
+        };
+        try {
+            $controller->put((int) $second['id'], ['roles' => []]);
+            $this->fail('Stale admin count bypassed serialization guard');
+        } catch (\Objectiveweb\Auth\UserException $exception) {
+            $this->assertSame(409, $exception->getCode());
+        }
+
+        // The simulated concurrent mutation must roll back with the guard.
+        $this->assertCount(2, $auth->get_users_by_role('admin'));
+        $this->assertContains('admin', $auth->get($second['id'])['roles']);
+    }
+
     public function testDeleteRejectsUnknownSubresourcesWithoutDeletingUser(): void
     {
         self::$controller->post([
