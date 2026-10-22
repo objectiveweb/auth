@@ -301,6 +301,8 @@ class UserControllerTest extends TestCase
         ]);
         $controller = new UserController($auth);
         $admin = $auth->register('sole-admin@example.com', 'secret', ['roles' => ['admin']]);
+        $auth->register('admin-actor@example.com', 'secret');
+        $auth->login('admin-actor@example.com', 'secret');
         $id = (int) $admin['id'];
 
         $mutations = [
@@ -340,6 +342,8 @@ class UserControllerTest extends TestCase
         $controller = new UserController($auth);
         $first = $auth->register('first-admin@example.com', 'secret', ['roles' => ['admin']]);
         $second = $auth->register('second-admin@example.com', 'secret', ['roles' => ['admin']]);
+        $auth->register('management-actor@example.com', 'secret');
+        $auth->login('management-actor@example.com', 'secret');
 
         $this->assertSame(['ok' => true], $controller->delete((int) $first['id']));
         $this->assertCount(1, array_filter(
@@ -383,6 +387,8 @@ class UserControllerTest extends TestCase
         $controller = new UserController($auth);
         $first = $auth->register('race-first@example.com', 'secret', ['roles' => ['admin']]);
         $second = $auth->register('race-second@example.com', 'secret', ['roles' => ['admin']]);
+        $auth->register('race-actor@example.com', 'secret');
+        $auth->login('race-actor@example.com', 'secret');
 
         $db->beforeRoleLock = static function () use ($db, $first): void {
             $db->delete('user_roles', ['user_id' => $first['id']]);
