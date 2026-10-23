@@ -147,13 +147,19 @@ $assert(
     'Verified credential is missing verified_at'
 );
 
-// Roles are synced portably with MySQL's SQL dialect.
+// Roles are synced portably with MySQL's SQL dialect. Preserve another
+// active admin while demoting the account under test.
+$backupAdmin = $auth->register('mysql-backup-admin@example.com', 'backup-secret', [
+    'roles' => ['admin'],
+]);
 $auth->update($admin['id'], ['roles' => ['operator']]);
 $assert($auth->get($admin['id'])['roles'] === ['operator'], 'Role replacement failed');
-$assert($auth->get_users_by_role('admin') === [], 'Removed role still grants access');
+$remainingAdmins = $auth->get_users_by_role('admin');
+$assert(count($remainingAdmins) === 1 && $remainingAdmins[0]['id'] == $backupAdmin['id'],
+    'Removed role still grants access or backup admin was lost');
 $auth->delete($viewer['id']);
 $assert($auth->get_users_by_role('viewer') === [], 'Deleted user still appears in role lookup');
-$assert(count($auth->query()) === 1, 'Deleted user still appears in MySQL query');
+$assert(count($auth->query()) === 2, 'Deleted user still appears in MySQL query');
 
 // Provider identity comparisons must remain exact even when the database's
 // default collation is case-insensitive. These are distinct OAuth subjects.
