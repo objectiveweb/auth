@@ -8,20 +8,27 @@
     }
   ],
   "support": {
-    "issues" : "https://github.com/bravado/objectiveweb/issues"
+    "issues" : "https://github.com/objectiveweb/auth/issues"
   },
   "require": {
-    "php": ">=5.3.0"
+    "php": ">=8.2.0",
+    "objectiveweb/db": "^0.8.0"
   },
   "require-dev": {
-    "phpunit/phpunit": "4.*"
+    "phpunit/phpunit": "10.*",
+    "robmorgan/phinx": "^0.16",
+    "objectiveweb/router": "^3.0"
+  },
+  "suggest": {
+    "league/oauth2-google": "Google Login",
+    "league/oauth2-facebook": "Facebook Login"
   },
   "autoload": {
     "psr-4": {
-      "Objectiveweb\\": "src"
+      "Objectiveweb\\Auth\\": "src/Auth/"
     },
     "files": [
-      "src/password.php"
+      "src/Auth.php"
     ]
   }
 }
