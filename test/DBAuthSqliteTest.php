@@ -848,6 +848,8 @@ class DBAuthSqliteTest extends TestCase
 
     public function testUserCanRevalidatesRolesAfterChangesOutsideSession(): void
     {
+        // Preserve an independent active admin while revoking this user's role.
+        self::$auth->register('role-refresh-backup@example.com', 'secret', ['roles' => ['admin']]);
         $user = self::$auth->register('role-refresh@example.com', 'secret', [
             'roles' => ['admin'],
         ]);
@@ -871,6 +873,7 @@ class DBAuthSqliteTest extends TestCase
 
     public function testUserCanRejectsSuspendedAccountForAllCheckModes(): void
     {
+        self::$auth->register('suspend-backup-admin@example.com', 'secret', ['roles' => ['admin']]);
         $user = self::$auth->register('suspended-permissions@example.com', 'secret', [
             'roles' => ['admin'],
         ]);
@@ -914,6 +917,7 @@ class DBAuthSqliteTest extends TestCase
 
     public function testUserCanRejectsSessionForDeletedUser(): void
     {
+        self::$auth->register('delete-backup-admin@example.com', 'secret', ['roles' => ['admin']]);
         $user = self::$auth->register('deleted-permissions@example.com', 'secret', [
             'roles' => ['admin'],
         ]);
