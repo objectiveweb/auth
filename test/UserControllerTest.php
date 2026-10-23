@@ -405,6 +405,73 @@ class UserControllerTest extends TestCase
         $this->assertContains('admin', $auth->get($second['id'])['roles']);
     }
 
+    public function testDirectDbAuthCallsCannotRemoveFinalActiveAdmin(): void
+    {
+        self::$db->insert('auth_role', ['name' => 'admin']);
+        $auth = new DBAuth(self::$db, [
+            'table' => 'auth_user',
+            'credentials_table' => 'auth_credentials',
+            'created' => 'created',
+            'token' => 'token',
+            'credentials_last_login' => 'last_login',
+            'credentials_created' => null,
+            'disabled_at' => 'disabled_at',
+            'roles_table' => 'auth_role',
+            'user_roles_table' => 'auth_user_role',
+        ]);
+        $admin = $auth->register('direct-admin@example.com', 'secret', ['roles' => ['admin']]);
+        $id = (int) $admin['id'];
+
+        foreach ([
+            static fn () => $auth->update($id, ['roles' => []]),
+            static fn () => $auth->update($id, ['disabled_at' => '2026-01-01 00:00:00']),
+            static fn () => $auth->delete($id),
+        ] as $mutation) {
+            try {
+                $mutation();
+                $this->fail('Direct DBAuth mutation removed the final active admin');
+            } catch (\Objectiveweb\Auth\UserException $exception) {
+                $this->assertSame(409, $exception->getCode());
+            }
+            $user = $auth->get($id);
+            $this->assertTrue($auth->is_active($user));
+            $this->assertContains('admin', $user['roles']);
+        }
+    }
+
+    public function testOrdinaryDbAuthUpdateSkipsAdminRoleLock(): void
+    {
+        $db = new class('sqlite::memory:') extends DB {
+            public int $roleLockCalls = 0;
+            public function update(string $table, array $data, ?array $where = null): int
+            {
+                if ($table === 'role' && isset($where['name'])
+                    && $where['name'] === 'admin' && ($data['name'] ?? '') === 'admin') {
+                    $this->roleLockCalls++;
+                }
+                return parent::update($table, $data, $where);
+            }
+        };
+        $db->query('CREATE TABLE user (id INTEGER PRIMARY KEY AUTOINCREMENT, uuid TEXT NOT NULL UNIQUE, name TEXT, password TEXT, disabled_at TEXT)')->exec();
+        $db->query('CREATE TABLE user_credentials (uid TEXT NOT NULL, provider TEXT NOT NULL, user_id INTEGER NOT NULL, profile TEXT, token TEXT, token_expires_at TEXT, verified_at TEXT, last_login TEXT, created TEXT, PRIMARY KEY(uid, provider))')->exec();
+        $db->query('CREATE TABLE role (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE)')->exec();
+        $db->query('CREATE TABLE user_roles (user_id INTEGER NOT NULL, role_id INTEGER NOT NULL, PRIMARY KEY(user_id, role_id))')->exec();
+        $db->insert('role', ['id' => 1, 'name' => 'admin']);
+
+        $auth = new DBAuth($db, ['disabled_at' => 'disabled_at', 'created' => null]);
+        $first = $auth->register('ordinary-admin@example.com', 'secret', ['roles' => ['admin']]);
+        $auth->register('second-ordinary-admin@example.com', 'secret', ['roles' => ['admin']]);
+        $id = (int) $first['id'];
+
+        $auth->update($id, ['name' => 'Renamed Admin']);
+        $auth->update($id, ['disabled_at' => null]);
+        $auth->update($id, ['roles' => ['admin']]);
+        $this->assertSame(0, $db->roleLockCalls);
+
+        $auth->update($id, ['roles' => []]);
+        $this->assertSame(1, $db->roleLockCalls);
+    }
+
     public function testDeleteRejectsUnknownSubresourcesWithoutDeletingUser(): void
     {
         self::$controller->post([

@@ -472,8 +472,44 @@ class DBAuth extends \Objectiveweb\Auth
             throw new \InvalidArgumentException('Role sync requested but role tables are disabled');
         }
 
-        // User fields, role definitions and memberships must commit or roll back together.
-        $this->db->transaction(function () use ($column, $user_id, $key, $data, $syncRoles, $roles): void {
+        // Only updates that might remove an active administrator need the
+        // shared lock; routine profile edits, promotions and activation don't.
+        $disabledField = $this->params['disabled_at'];
+        $removesAdminRole = $syncRoles && !in_array('admin', $roles, true);
+        $suspendsAccount = is_string($disabledField) && $disabledField !== ''
+            && !empty($data[$disabledField]);
+        $needsAdminCheck = $this->rolesEnabled() && ($removesAdminRole || $suspendsAccount);
+
+        // User fields, role definitions and memberships commit or roll back
+        // together, including the final-active-admin safeguard.
+        $this->db->transaction(function () use (
+            $column, $user_id, $key, $data, $syncRoles, $roles, $needsAdminCheck
+        ): void {
+            if ($needsAdminCheck) {
+                // All admin-removing DBAuth writes lock the same stable row.
+                // A no-op UPDATE serializes them in MySQL/PostgreSQL, and
+                // obtains SQLite's write lock without dialect-specific SQL.
+                $roleName = (string) $this->params['role_name'];
+                $this->db->update(
+                    (string) $this->params['roles_table'],
+                    [$roleName => 'admin'],
+                    [$roleName => 'admin']
+                );
+
+                // Both the target and count must be loaded after the lock.
+                $target = $this->get($user_id, $key);
+                if (in_array('admin', (array) ($target[$this->params['roles']] ?? []), true)
+                    && $this->is_active($target)) {
+                    $activeAdmins = array_filter(
+                        $this->get_users_by_role('admin'),
+                        fn (array $user): bool => $this->is_active($user)
+                    );
+                    if (count($activeAdmins) <= 1) {
+                        throw new UserException('Cannot remove or suspend the final active administrator', 409);
+                    }
+                }
+            }
+
             if (!empty($data)) {
                 foreach ($data as $k => $v) {
                     if (is_array($v)) {
@@ -492,31 +528,6 @@ class DBAuth extends \Objectiveweb\Auth
         });
     }
 
-    /**
-     * Use the same stable role row for every potentially admin-removing
-     * mutation. The no-op UPDATE takes a row lock in MySQL/PostgreSQL and a
-     * write lock in SQLite. Unlike FOR UPDATE, it works on all supported
-     * engines, and DB::update handles configured table prefixes.
-     *
-     * The caller must read the target and count active administrators only
-     * after this lock has been acquired.
-     */
-    public function with_admin_mutation(callable $mutation): mixed
-    {
-        return $this->db->transaction(function (DB $db) use ($mutation): mixed {
-            if ($this->rolesEnabled()) {
-                $roleField = (string) $this->params['role_name'];
-                $db->update(
-                    (string) $this->params['roles_table'],
-                    [$roleField => 'admin'],
-                    [$roleField => 'admin']
-                );
-            }
-
-            return $mutation();
-        });
-    }
-
     public function delete($user_id)
     {
         if ($this->check()) {
@@ -527,6 +538,28 @@ class DBAuth extends \Objectiveweb\Auth
         }
 
         return $this->db->transaction(function () use ($user_id): bool {
+            if ($this->rolesEnabled()) {
+                // Serialize deletion with any demotion/suspension of an admin.
+                $roleName = (string) $this->params['role_name'];
+                $this->db->update(
+                    (string) $this->params['roles_table'],
+                    [$roleName => 'admin'],
+                    [$roleName => 'admin']
+                );
+
+                $target = $this->get($user_id);
+                if (in_array('admin', (array) ($target[$this->params['roles']] ?? []), true)
+                    && $this->is_active($target)) {
+                    $activeAdmins = array_filter(
+                        $this->get_users_by_role('admin'),
+                        fn (array $user): bool => $this->is_active($user)
+                    );
+                    if (count($activeAdmins) <= 1) {
+                        throw new UserException('Cannot remove or suspend the final active administrator', 409);
+                    }
+                }
+            }
+
             $guard = $this->params['deletion_guard_callback'];
             if (is_callable($guard)) {
                 $result = call_user_func($guard, $user_id);

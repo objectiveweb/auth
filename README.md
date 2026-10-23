@@ -682,12 +682,15 @@ The explicit authenticated `postLink()` flow remains distinct from the *anonymou
 
 ## User-management API
 
-DBAuth serializes administrator removal, demotion and suspension inside
-`$db->transaction()`. It acquires a shared lock on the `admin` role row
-before reloading the target and checking the active-administrator count,
-including when a `PUT` request changes `disabled_at` directly.
-Custom code that bypasses UserController must protect the same invariant;
-the lock uses a no-op UPDATE, which may activate role-table UPDATE triggers.
+DBAuth enforces the final-active-administrator invariant directly in its
+existing `update()` and `delete()` transactions. Operations that may
+demote or suspend an administrator, and user deletions, serialize through
+a lock on the `admin` role row before counting active administrators.
+Ordinary profile updates and account activation do not acquire that lock.
+This protection also applies to direct DBAuth calls; application code that
+writes to role or user tables without DBAuth must enforce it separately.
+The lock is implemented with a no-op UPDATE, which can activate role-table
+UPDATE triggers.
 
 
 Register `Objectiveweb\Auth\Controller\UserController` at an application-owned
