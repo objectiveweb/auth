@@ -764,6 +764,32 @@ class DBAuthSqliteTest extends TestCase
         $this->assertArrayNotHasKey('token_expires_at', $reset);
     }
 
+    public function testPublicPasswordlessRegistrationRollbackOnDeliveryException(): void
+    {
+        $previous = self::$auth->params['invitation_callback'];
+        self::$auth->params['invitation_callback'] = static function (): void {
+            throw new \RuntimeException('email service unavailable');
+        };
+        try {
+            $beforeUsers = self::$db->count('auth_user', []);
+            $beforeCredentials = self::$db->count('auth_credentials', []);
+            try {
+                (new AuthController(self::$auth))->postRegister([
+                    'uid' => 'db-public-invite@example.com',
+                ]);
+                $this->fail('Expected failure from invitation delivery');
+            } catch (\RuntimeException $exception) {
+                $this->assertSame('email service unavailable', $exception->getMessage());
+            }
+
+            $this->assertSame($beforeUsers, self::$db->count('auth_user', []));
+            $this->assertSame($beforeCredentials, self::$db->count('auth_credentials', []));
+            $this->assertFalse(self::$auth->get_credential('local', 'db-public-invite@example.com'));
+        } finally {
+            self::$auth->params['invitation_callback'] = $previous;
+        }
+    }
+
     public function testInvitationCallbackReceivesSanitizedUser(): void
     {
         $captured = null;

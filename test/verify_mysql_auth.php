@@ -201,4 +201,46 @@ $assert(
     'MySQL incorrectly resolved an OAuth subject using case-insensitive lookup'
 );
 
+
+// Transactional invited registration: reject missing delivery before INSERT,
+// roll back the user/credential on callback exception, and keep a valid token
+// when a configured delivery callback succeeds.
+$beforeInvitationCount = $db->count('user', []);
+$expectFailure(
+    static fn () => $auth->register('no-delivery@example.com', null, ['provider' => 'local'], true),
+    UserException::class,
+    400
+);
+$assert($db->count('user', []) === $beforeInvitationCount,
+    'Missing invitation delivery created a MySQL account');
+
+$auth->params['invitation_callback'] = static function (): void {
+    throw new RuntimeException('SMTP delivery failed');
+};
+try {
+    $auth->register('smtp-failed@example.com', null, ['provider' => 'local'], true);
+    throw new RuntimeException('Expected invitation delivery exception');
+} catch (RuntimeException $exception) {
+    $assert($exception->getMessage() === 'SMTP delivery failed',
+        'Unexpected invitation delivery error');
+}
+$assert($db->count('user', []) === $beforeInvitationCount,
+    'Failed invitation persisted a MySQL account');
+$assert($auth->get_credential('local', 'smtp-failed@example.com') === false,
+    'Failed invitation left an orphaned MySQL credential');
+
+$deliveredToken = null;
+$auth->params['invitation_callback'] = static function (
+    array $user, array $credentials, string $token
+) use (&$deliveredToken): void {
+    $deliveredToken = $token;
+};
+$invited = $auth->register('invited@example.com', null, ['provider' => 'local'], true);
+$assert(is_string($deliveredToken) && $deliveredToken !== '',
+    'Valid MySQL invitation was not delivered');
+$storedInvited = $db->select('user', ['id' => $invited['id']], ['limit' => 1])->fetch();
+$assert($storedInvited['token'] === hash('sha256', $deliveredToken),
+    'MySQL invited account does not have the delivered token');
+$auth->params['invitation_callback'] = null;
+
 echo "MySQL 8 DBAuth registration, roles, login, pagination, password reset, credential verification and deletion passed.\n";

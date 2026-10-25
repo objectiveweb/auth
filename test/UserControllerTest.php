@@ -129,6 +129,82 @@ class UserControllerTest extends TestCase
         $this->assertGreaterThan(0, (int) $user['id']);
     }
 
+    public function testAdminInvitationRequiresDeliveryAndDoesNotInsertUser(): void
+    {
+        foreach (['token-disabled', 'no-callback'] as $case) {
+            $auth = new DBAuth(self::$db, [
+                'table' => 'auth_user',
+                'credentials_table' => 'auth_credentials',
+                'created' => 'created',
+                'credentials_created' => null,
+                'roles_table' => null,
+                'user_roles_table' => null,
+                'token' => $case === 'token-disabled' ? null : 'token',
+                'invitation_callback' => $case === 'token-disabled'
+                    ? static function (): void {} : null,
+            ]);
+            try {
+                (new UserController($auth))->post(['uid' => $case . '@example.com']);
+                $this->fail('Unconfigured admin invitation inserted a user');
+            } catch (\Objectiveweb\Auth\UserException $exception) {
+                $this->assertSame(400, $exception->getCode());
+            }
+            $this->assertSame(0, self::$db->count('auth_user', []));
+            $this->assertSame(0, self::$db->count('auth_credentials', []));
+        }
+    }
+
+    public function testAdminInvitationRollsBackAfterDeliveryException(): void
+    {
+        $auth = new DBAuth(self::$db, [
+            'table' => 'auth_user',
+            'credentials_table' => 'auth_credentials',
+            'created' => 'created',
+            'credentials_created' => null,
+            'roles_table' => null,
+            'user_roles_table' => null,
+            'token' => 'token',
+            'invitation_callback' => static function (): void {
+                throw new \RuntimeException('delivery rejected');
+            },
+        ]);
+        try {
+            (new UserController($auth))->post(['uid' => 'admin-invite-failed@example.com']);
+            $this->fail('Invitation callback exception did not roll back user');
+        } catch (\RuntimeException $exception) {
+            $this->assertSame('delivery rejected', $exception->getMessage());
+        }
+
+        $this->assertSame(0, self::$db->count('auth_user', []));
+        $this->assertSame(0, self::$db->count('auth_credentials', []));
+    }
+
+    public function testAdminPasswordlessInvitationCreatesUserWithSetupToken(): void
+    {
+        $received = null;
+        $auth = new DBAuth(self::$db, [
+            'table' => 'auth_user',
+            'credentials_table' => 'auth_credentials',
+            'created' => 'created',
+            'credentials_created' => null,
+            'roles_table' => null,
+            'user_roles_table' => null,
+            'token' => 'token',
+            'invitation_callback' => static function (array $user, array $credentials, string $token)
+                use (&$received): void {
+                $received = compact('user', 'credentials', 'token');
+            },
+        ]);
+        $user = (new UserController($auth))->post(['uid' => 'admin-invited@example.com']);
+
+        $this->assertSame('admin-invited@example.com', $user['credentials'][0]['uid']);
+        $this->assertArrayNotHasKey('token', $user);
+        $this->assertIsArray($received);
+        $this->assertSame($user['id'], $received['user']['id']);
+        $this->assertNotEmpty($received['token']);
+        $this->assertSame(hash('sha256', $received['token']), $auth->get($user['id'])['token']);
+    }
+
     public function testPostMissingUid(): void
     {
         $this->expectException(\Objectiveweb\Auth\UserException::class);

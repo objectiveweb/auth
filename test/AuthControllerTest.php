@@ -508,6 +508,81 @@ class AuthControllerTest extends TestCase
         $this->assertSame('email', $deliveries[0]['provider']);
     }
 
+    public function testPasswordlessPublicRegistrationRequiresTokenAndDeliveryBeforeInsert(): void
+    {
+        foreach ([
+            ['invitation_callback' => static function (): void {}],
+            ['token' => 'token'],
+            [],
+        ] as $params) {
+            $auth = new BasicAuth([], $params);
+            $controller = new AuthController($auth);
+            try {
+                $controller->postRegister(['uid' => 'unconfigured@example.com']);
+                $this->fail('Unconfigured invitation created an account');
+            } catch (UserException $exception) {
+                $this->assertSame(400, $exception->getCode());
+            }
+            $this->assertFalse($auth->get_credential('local', 'unconfigured@example.com'));
+            $this->assertSame(0, $auth->query()->total());
+        }
+    }
+
+    public function testPublicInvitationRollsBackIfDeliveryThrows(): void
+    {
+        $auth = new BasicAuth([], [
+            'token' => 'token',
+            'invitation_callback' => static function (): void {
+                throw new \RuntimeException('delivery failed');
+            },
+        ]);
+        $controller = new AuthController($auth);
+        try {
+            $controller->postRegister(['uid' => 'failed-delivery@example.com']);
+            $this->fail('Failed delivery was accepted');
+        } catch (\RuntimeException $exception) {
+            $this->assertSame('delivery failed', $exception->getMessage());
+        }
+
+        $this->assertFalse($auth->get_credential('local', 'failed-delivery@example.com'));
+        $this->assertSame(0, $auth->query()->total());
+
+        // The identifier is reusable when delivery becomes available.
+        $delivered = null;
+        $auth->params['invitation_callback'] = static function (
+            array $user, array $credentials, string $token
+        ) use (&$delivered): void {
+            $delivered = $token;
+        };
+        $user = $controller->postRegister(['uid' => 'failed-delivery@example.com']);
+        $this->assertSame('failed-delivery@example.com', $user['uid']);
+        $this->assertIsString($delivered);
+        $this->assertTrue(password_verify($delivered, $auth->get($user['id'])['token']));
+    }
+
+    public function testPublicPasswordlessInvitationIssuesUsableSetupToken(): void
+    {
+        $captured = null;
+        $auth = new BasicAuth([], [
+            'token' => 'token',
+            'invitation_callback' => static function (array $user, array $credentials, string $token)
+                use (&$captured): void {
+                $captured = compact('user', 'credentials', 'token');
+            },
+        ]);
+        $controller = new AuthController($auth);
+        $user = $controller->postRegister(['uid' => 'new-invite@example.com']);
+
+        $this->assertSame('new-invite@example.com', $user['uid']);
+        $this->assertArrayNotHasKey('token', $user);
+        $this->assertSame($user['id'], $captured['user']['id']);
+        $this->assertCount(1, $captured['credentials']);
+        $this->assertSame('local', $captured['credentials'][0]['provider']);
+        $this->assertNotEmpty($captured['token']);
+        $this->assertSame($user['id'], $auth->passwd_reset($captured['token'], 'set-secret')['id']);
+        $this->assertSame($user['id'], $auth->login('new-invite@example.com', 'set-secret')['id']);
+    }
+
     public function testPublicRegistrationCreatesOnlyLocalCredential(): void
     {
         $user = $this->controller->postRegister([
