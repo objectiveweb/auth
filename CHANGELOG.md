@@ -38,6 +38,7 @@ All notable changes to `objectiveweb/auth` are documented here. This project fol
 - Prevent account enumeration through password-login errors and anonymous password-recovery responses.
 - Allow anonymous password recovery only through independently verified credential channels (including local), preventing reset delivery to unverified emails/phone numbers; preserve generic responses and trusted administrator invitation/reset workflows.
 - Consume password reset and credential-verification tokens at most once; separate proof for each provider credential.
+- Prevent orphaned passwordless registrations: preflight invitation configuration, create account/credential/reset token transactionally in DBAuth, and undo BasicAuth registrations if delivery throws.
 - Revoke outstanding password-reset tokens and expirations whenever a user password is changed, atomically with the password hash update on DBAuth.
 - Serialize DBAuth credential deletion per user inside a transaction so simultaneous requests cannot remove every credential from an account.
 - Prevent OAuth login CSRF, state replay, cross-provider state confusion, unconsented linking, email-based account takeover and cross-account credential reassignment.

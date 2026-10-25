@@ -126,7 +126,9 @@ These options come from both the shared `Auth` contract and `DBAuth`. Set only t
 | `audit_callback` | `null` | Management events: `(actorId, targetId, action, metadata)` |
 | `deletion_guard_callback` | `null` | Return `false` or a conflict string to reject user deletion |
 
-The anonymous `token_callback` receives a **single** credential array containing the one-time token. `Auth::invite()` instead invokes `invitation_callback` or `reset_callback` with **three** arguments; without dedicated callbacks it falls back to `register_callback`/`token_callback`, respectively. Prefer dedicated callbacks when supporting both flows.
+The anonymous `token_callback` receives a **single** credential array containing the one-time token. `Auth::invite()` instead invokes `invitation_callback` or `reset_callback` with **three** arguments; without dedicated callbacks it falls back to `register_callback`/`token_callback`, respectively. Prefer dedicated callbacks when supporting both flows. Setup/reset operations require both an enabled `token` field and a callable delivery callback; missing configuration fails with HTTP 400 before a user is created.
+
+Passwordless registration through either controller passes `true` as the optional fourth argument to `register($uid, $password, $data, bool $invite = false)`. DBAuth creates the user and credential, issues the setup token and invokes the delivery callback inside its existing database transaction, rolling back all changes on any exception. BasicAuth rolls back the in-memory account/credential on failure. Ordinary password registration and OAuth account creation remain unchanged. Outbound messages cannot be rolled back: for guaranteed delivery despite database commit or external delivery failures, use a transactional outbox.
 
 #### Database tables and migrations
 

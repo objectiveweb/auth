@@ -262,7 +262,7 @@ class DBAuth extends \Objectiveweb\Auth
         return $this->hydrateUserRow($row);
     }
 
-    public function register($uid, $password = null, $data = array())
+    public function register($uid, $password = null, $data = array(), bool $invite = false)
     {
         if (is_array($uid)) {
             $data = array_merge($uid, $data);
@@ -273,6 +273,12 @@ class DBAuth extends \Objectiveweb\Auth
 
         if (empty($uid)) {
             throw new UserException('Missing uid', 400);
+        }
+        if ($invite) {
+            if (is_string($password) && $password !== '') {
+                throw new UserException('Invitations require passwordless registration', 400);
+            }
+            $this->requireInvitationCallback();
         }
 
         $provider = empty($data['provider']) ? 'local' : $data['provider'];
@@ -323,7 +329,7 @@ class DBAuth extends \Objectiveweb\Auth
             $fields[$this->params['created']] = date('Y-m-d H:i:s');
         }
 
-        return $this->db->transaction(function () use ($uid, $provider, $profile, $fields, $syncRoles, $roles): array {
+        return $this->db->transaction(function () use ($uid, $provider, $profile, $fields, $syncRoles, $roles, $invite): array {
             if ($syncRoles) {
                 $this->resolveRoleIds($roles);
             }
@@ -355,6 +361,10 @@ class DBAuth extends \Objectiveweb\Auth
 
             if ($syncRoles) {
                 $this->syncUserRoles($userId, $roles);
+            }
+            if ($invite) {
+                // Roll back user, credential and setup token if delivery fails.
+                $this->invite($userId);
             }
 
             return $this->sanitize_user($this->get($userId));

@@ -174,14 +174,17 @@ class UserController
             $this->assertKnownRoles($data[$roleField]);
         }
 
-        $user = $this->auth->register($uid, is_string($password) && $password !== '' ? $password : null, $data);
+        $isInvitation = !is_string($password) || $password === '';
+        $user = $this->auth->register(
+            $uid,
+            $isInvitation ? null : $password,
+            $data,
+            $isInvitation
+        );
         $id = $user[$this->auth->params['id']];
-        if (!is_string($password) || $password === '') {
-            $this->auth->invite($id);
-        }
         $this->auth->audit('user.created', $id, [
             'roles' => $user[$this->auth->params['roles']] ?? [],
-            'invited' => !is_string($password) || $password === '',
+            'invited' => $isInvitation,
         ]);
         return $this->detail($id);
     }

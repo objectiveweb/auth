@@ -173,17 +173,31 @@ abstract class Auth
         call_user_func($callback, $actorId, $targetUserId, $action, $metadata);
     }
 
+    /**
+     * Ensure the setup/reset token can actually be delivered before creating
+     * an invited account or rotating an existing user's reset token.
+     */
+    protected function requireInvitationCallback(bool $reset = false): callable
+    {
+        $tokenField = $this->params['token'];
+        if (!is_string($tokenField) || $tokenField === '') {
+            throw new Auth\UserException('Token support is disabled', 400);
+        }
+        $callback = $this->params[$reset ? 'reset_callback' : 'invitation_callback']
+            ?? ($reset ? $this->params['token_callback'] : $this->params['register_callback']);
+        if (!is_callable($callback)) {
+            throw new Auth\UserException('Invitation delivery is not configured', 400);
+        }
+        return $callback;
+    }
+
     public function invite(int|string $userId, bool $reset = false): void
     {
+        $callback = $this->requireInvitationCallback($reset);
         $user = $this->sanitize_user($this->get($userId));
         $token = $this->update_token($userId);
         $credentials = $this->get_credentials($userId);
-        $callback = $this->params[$reset ? 'reset_callback' : 'invitation_callback']
-            ?? ($reset ? $this->params['token_callback'] : $this->params['register_callback']);
-
-        if (is_callable($callback)) {
-            call_user_func($callback, $user, $credentials, $token);
-        }
+        call_user_func($callback, $user, $credentials, $token);
     }
 
     public function user_can(string $ability, mixed ...$args): bool|array
@@ -402,7 +416,7 @@ abstract class Auth
      * @param string $password
      * @param array $data associative array of additional columns to store
      */
-    abstract public function register($uid, $password = null, $data = array());
+    abstract public function register($uid, $password = null, $data = array(), bool $invite = false);
 
     /**
      *

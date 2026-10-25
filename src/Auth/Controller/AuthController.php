@@ -131,17 +131,15 @@ class AuthController
             }
         }
 
+        $isInvitation = !is_string($password) || $password === '';
         $user['provider'] = 'local';
-        $user = $this->auth->register($uid, $password, $user);
+        // Invite inside the provider's registration transaction, so failure
+        // cannot leave a passwordless account without its setup link.
+        $user = $this->auth->register($uid, $password, $user, $isInvitation);
 
         $user['uid'] = $uid;
 
-        if (!is_string($password) || $password === '') {
-            // A password-less registration is an invitation. The backend stores
-            // only a hash of the short-lived setup token and delivery happens
-            // through the application callback.
-            $this->auth->invite($user[$this->auth->params['id']]);
-        } elseif (is_callable($this->auth->params['register_callback'])) {
+        if (!$isInvitation && is_callable($this->auth->params['register_callback'])) {
             call_user_func($this->auth->params['register_callback'], $user);
         }
 
