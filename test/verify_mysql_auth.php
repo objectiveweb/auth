@@ -161,6 +161,19 @@ $auth->delete($viewer['id']);
 $assert($auth->get_users_by_role('viewer') === [], 'Deleted user still appears in role lookup');
 $assert(count($auth->query()) === 2, 'Deleted user still appears in MySQL query');
 
+// Deletions must preserve at least one credential even on MySQL.
+$assert($auth->delete_credential($admin['id'], 'email', 'admin-contact@example.com'),
+    'Could not delete secondary credential on MySQL');
+$assert($auth->get_credential('email', 'admin-contact@example.com') === false,
+    'Deleted secondary credential still exists');
+$expectFailure(
+    static fn () => $auth->delete_credential($admin['id'], 'local', 'mysql-admin@example.com'),
+    UserException::class,
+    409
+);
+$assert(count($auth->get_credentials($admin['id'])) === 1,
+    'MySQL allowed removal of the last credential');
+
 // Provider identity comparisons must remain exact even when the database's
 // default collation is case-insensitive. These are distinct OAuth subjects.
 $subjects = [

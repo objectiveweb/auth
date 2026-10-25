@@ -1441,6 +1441,100 @@ class DBAuthSqliteTest extends TestCase
         self::$auth->delete_credential($alice['id'], 'local', 'alice@example.com');
     }
 
+
+    public function testCredentialDeletionKeepsAtLeastOneCredential(): void
+    {
+        $user = self::$auth->register('delete-credential@example.com', 'secret');
+        self::$auth->create_credential($user['id'], 'phone', '+5511990000011');
+
+        $this->assertTrue(self::$auth->delete_credential($user['id'], 'phone', '+5511990000011'));
+        $this->assertCount(1, self::$auth->get_credentials($user['id']));
+        $this->assertNotFalse(self::$auth->get_credential('local', 'delete-credential@example.com'));
+        $this->assertFalse(self::$auth->get_credential('phone', '+5511990000011'));
+
+        try {
+            self::$auth->delete_credential($user['id'], 'local', 'delete-credential@example.com');
+            $this->fail('Deleted the last remaining credential');
+        } catch (UserException $exception) {
+            $this->assertSame(409, $exception->getCode());
+        }
+        $this->assertCount(1, self::$auth->get_credentials($user['id']));
+    }
+
+    public function testCompetingCredentialDeletionRecountsAfterPerUserLock(): void
+    {
+        // Two separate DB connections model independent requests. The second
+        // deletion commits before the first acquires its user-row lock.
+        $path = tempnam(sys_get_temp_dir(), 'auth-credential-race-');
+        $this->assertNotFalse($path);
+
+        try {
+            $firstDB = new class('sqlite:' . $path) extends DB {
+                public ?\Closure $beforeUserLock = null;
+
+                public function update(string $table, array $data, ?array $where = null): int
+                {
+                    if ($table === 'race_user' && $this->beforeUserLock !== null) {
+                        $callback = $this->beforeUserLock;
+                        $this->beforeUserLock = null;
+                        $callback();
+                    }
+                    return parent::update($table, $data, $where);
+                }
+            };
+            $firstDB->query(
+                'CREATE TABLE race_user (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    uuid TEXT NOT NULL UNIQUE,
+                    name TEXT,
+                    password TEXT
+                )'
+            )->exec();
+            $firstDB->query(
+                'CREATE TABLE race_credentials (
+                    uid TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    profile TEXT,
+                    PRIMARY KEY(uid, provider)
+                )'
+            )->exec();
+
+            $options = [
+                'table' => 'race_user',
+                'credentials_table' => 'race_credentials',
+                'roles_table' => null,
+                'user_roles_table' => null,
+                'created' => null,
+                'credentials_created' => null,
+                'credentials_last_login' => null,
+            ];
+            $auth1 = new DBAuth($firstDB, $options);
+            $user = $auth1->register('race-owner@example.com', 'secret');
+            $auth1->create_credential($user['id'], 'phone', '+5511990000022');
+
+            $secondDB = new DB('sqlite:' . $path);
+            $auth2 = new DBAuth($secondDB, $options);
+            $firstDB->beforeUserLock = static function () use ($auth2, $user): void {
+                $auth2->delete_credential($user['id'], 'phone', '+5511990000022');
+            };
+
+            try {
+                $auth1->delete_credential($user['id'], 'local', 'race-owner@example.com');
+                $this->fail('A stale credential count allowed both deletions');
+            } catch (UserException $exception) {
+                $this->assertSame(409, $exception->getCode());
+            }
+
+            $this->assertFalse($auth1->get_credential('phone', '+5511990000022'));
+            $this->assertNotFalse($auth1->get_credential('local', 'race-owner@example.com'));
+            $this->assertCount(1, $auth1->get_credentials($user['id']));
+        } finally {
+            unset($auth1, $auth2, $firstDB, $secondDB);
+            unlink($path);
+        }
+    }
+
     public function testUserDeletionCleansDelegationsButLeavesApplicationAssociationsToApplication(): void
     {
         $actor = self::$auth->register('actor@example.com', 'secret');

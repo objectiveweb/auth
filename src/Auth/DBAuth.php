@@ -861,19 +861,37 @@ class DBAuth extends \Objectiveweb\Auth
 
     public function delete_credential($userid, string $provider, string $uid): bool
     {
-        $credential = $this->get_credential($provider, $uid);
-        if (!$credential || ($credential['user_id'] ?? null) != $userid) {
-            throw new UserException('Credential not found', 404);
-        }
-        if (count($this->get_credentials($userid)) <= 1) {
-            throw new UserException('A user must have at least one credential', 409);
-        }
-        $this->db->delete($this->params['credentials_table'], [
-            'user_id' => $userid,
-            'provider' => $provider,
-            'uid' => $uid,
-        ]);
-        return true;
+        return $this->db->transaction(function (DB $db) use ($userid, $provider, $uid): bool {
+            // Serialize deletions for this user using its stable parent row.
+            // A no-op UPDATE takes an exclusive row lock on MySQL/PostgreSQL
+            // and a write lock on SQLite, without database-specific SQL.
+            // Read the credential and its count only after acquiring the lock.
+            $idField = (string) $this->params['id'];
+            $db->update(
+                (string) $this->params['table'],
+                [$idField => $userid],
+                [$idField => $userid]
+            );
+
+            $credential = $this->get_credential($provider, $uid);
+            if (!$credential || ($credential['user_id'] ?? null) != $userid) {
+                throw new UserException('Credential not found', 404);
+            }
+            if ($db->count((string) $this->params['credentials_table'], ['user_id' => $userid]) <= 1) {
+                throw new UserException('A user must have at least one credential', 409);
+            }
+
+            $deleted = $db->delete((string) $this->params['credentials_table'], [
+                'user_id' => $userid,
+                'provider' => $provider,
+                'uid' => $uid,
+            ]);
+            if ($deleted !== 1) {
+                throw new UserException('Credential not found', 404);
+            }
+
+            return true;
+        });
     }
 
     public function get_credentials($user_id, $key = 'id'): array
