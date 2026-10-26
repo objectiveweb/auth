@@ -30,8 +30,9 @@ the library's runtime dependencies using `composer install --no-dev`, checks
 platform requirements, and executes
 [`test/verify_production_install.php`](test/verify_production_install.php).
 The smoke test confirms that the public Auth, BasicAuth, DBAuth, controller
-and database classes autoload, and that registration, login and logout work
-without PHPUnit or Phinx installed.
+and database classes autoload, then exercises DBAuth registration, login,
+session revalidation, password change and logout against SQLite without
+PHPUnit or Phinx installed.
 
 It also installs the unreleased source into a **separate consumer project**
 with a non-symlinked Composer path repository, then repeats the smoke checks
@@ -433,7 +434,12 @@ Session context is not implicitly added to `get()` or `query()` results; those r
 
 ### `BasicAuth`
 
-In-memory provider for tests/dev/small setups.
+**Reference/test provider only — not for production.** `BasicAuth` is an
+in-memory implementation of the `Auth` provider contract for tests, examples
+and developing custom providers. Its data does not persist across instances or
+processes, and it does not provide production session-identity, concurrency or
+storage guarantees. Production applications should use `DBAuth` or another
+purpose-built provider.
 
 `BasicAuth` fully implements the provider contract:
 - `query`, `get`, `register`, `login`
@@ -457,7 +463,10 @@ $auth = new BasicAuth(
 );
 ```
 
-Passwords passed to the constructor/register are hashed internally unless already hashed.
+Fixture passwords passed to the constructor or `register()` are treated as
+**plaintext** and hashed internally, even if their text resembles a password
+hash. The provider generates non-reused numeric IDs within an instance, but
+does not retain identities between instances.
 
 ## Authenticated password changes
 
