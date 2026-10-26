@@ -42,7 +42,22 @@ class RegistrationRouterTest extends TestCase
      */
     private function dispatch(BasicAuth $auth, string $uid): array
     {
-        $router = new class extends Router {
+        $router = new class($auth) extends Router {
+            public function __construct(private BasicAuth $auth)
+            {
+                parent::__construct();
+            }
+
+            public function create(string $name, array $args = []): object
+            {
+                // Supply the already configured provider to the real middleware.
+                // Routing, attribute precedence and before()/after() remain real.
+                if ($name === \Objectiveweb\Auth\Middleware\RequireRole::class) {
+                    return new \Objectiveweb\Auth\Middleware\RequireRole($this->auth, $args[0]);
+                }
+                return parent::create($name, $args);
+            }
+
             public static mixed $response = null;
             public static int $status = 0;
 
