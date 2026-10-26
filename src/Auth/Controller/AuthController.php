@@ -105,6 +105,9 @@ class AuthController
      * Register a new user
      * @param $user array
      */
+    // The configured register_scope is enforced by assertCanRegister().
+    // Allow router dispatch to reach that check for anonymous and logged-in users.
+    #[Middleware(RequireRole::class, Auth::ALL)]
     function postRegister(array $user)
     {
         $this->assertCanRegister();
