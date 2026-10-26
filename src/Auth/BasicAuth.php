@@ -5,15 +5,15 @@ namespace Objectiveweb\Auth;
 use Objectiveweb\DB\Collection;
 
 /**
- * Class BasicAuth
- * Basic Auth implementation with hardcoded users
+ * In-memory reference implementation of the Auth provider contract.
  *
- * @package Objectiveweb\Auth
+ * For tests, examples and provider development only; not a production backend.
  */
 class BasicAuth extends \Objectiveweb\Auth
 {
     private array $users = [];
     private array $credentials = [];
+    private int $nextId = 1;
 
     public function __construct(array $passwd = [], array $params = [])
     {
@@ -80,7 +80,7 @@ class BasicAuth extends \Objectiveweb\Auth
             if ($status === 'suspended' && $this->is_active($row)) {
                 continue;
             }
-            $public = $this->publicUser($row);
+            $public = $this->sanitize_user($row);
             $public['credentials'] = $credentials;
             $matches[] = $public;
         }
@@ -113,11 +113,6 @@ class BasicAuth extends \Objectiveweb\Auth
         return $this->users[$resolved];
     }
 
-    public function &login($uid, $password)
-    {
-        return parent::login($uid, $password);
-    }
-
     public function register($uid, $password = null, $data = array(), bool $invite = false)
     {
         if (is_array($uid)) {
@@ -146,7 +141,11 @@ class BasicAuth extends \Objectiveweb\Auth
         }
 
         $idField = $this->params['id'];
-        $userId = $data[$idField] ?? $this->nextId();
+        $userId = $data[$idField] ?? $this->nextId++;
+        // Respect explicit numeric IDs used by test fixtures without reusing them.
+        if (is_int($userId) || (is_string($userId) && ctype_digit($userId))) {
+            $this->nextId = max($this->nextId, (int) $userId + 1);
+        }
 
         $record = $data;
         $record[$idField] = $userId;
@@ -156,9 +155,7 @@ class BasicAuth extends \Objectiveweb\Auth
         }
 
         if ($password !== null && $password !== '') {
-            $record[$this->params['password']] = $this->isPasswordHash($password)
-                ? $password
-                : self::hash($password);
+            $record[$this->params['password']] = self::hash($password);
         } elseif (!array_key_exists($this->params['password'], $record)) {
             $record[$this->params['password']] = null;
         }
@@ -184,7 +181,7 @@ class BasicAuth extends \Objectiveweb\Auth
             throw $exception;
         }
 
-        return $this->publicUser($record);
+        return $this->sanitize_user($record);
     }
 
     public function passwd($user_id, $password, $key = 'id')
@@ -237,7 +234,7 @@ class BasicAuth extends \Objectiveweb\Auth
                 $this->users[$userId][$expiresField] = null;
             }
 
-            return $this->publicUser($this->users[$userId]);
+            return $this->sanitize_user($this->users[$userId]);
         }
 
         throw new UserException('Hash not found', 404);
@@ -381,7 +378,7 @@ class BasicAuth extends \Objectiveweb\Auth
                 continue;
             }
 
-            $matches[] = $this->publicUser($user);
+            $matches[] = $this->sanitize_user($user);
         }
 
         return $matches;
@@ -573,16 +570,6 @@ class BasicAuth extends \Objectiveweb\Auth
         return true;
     }
 
-    private function nextId(): int
-    {
-        if (empty($this->users)) {
-            return 1;
-        }
-
-        $keys = array_keys($this->users);
-        return ((int) max($keys)) + 1;
-    }
-
     private function resolveUserId(mixed $value, string $key): int|string|null
     {
         if ($key === 'id' || $key === $this->params['id']) {
@@ -631,16 +618,6 @@ class BasicAuth extends \Objectiveweb\Auth
         }
 
         return in_array(true, $matches, true);
-    }
-
-    private function publicUser(array $user): array
-    {
-        return $this->sanitize_user($user);
-    }
-
-    private function isPasswordHash(string $value): bool
-    {
-        return password_get_info($value)['algo'] !== null;
     }
 
 }
