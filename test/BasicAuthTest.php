@@ -411,4 +411,38 @@ class BasicAuthTest extends TestCase
         $this->assertSame($admin['id'], $admins[0]['id']);
         $this->assertSame(['admin'], $admins[0]['roles']);
     }
+    public function testGeneratedIdsAreNotReusedAfterDeletion(): void
+    {
+        $first = $this->auth->register('first-id@example.com', 'secret');
+        $this->assertTrue($this->auth->delete($first['id']));
+        $second = $this->auth->register('second-id@example.com', 'secret');
+
+        $this->assertGreaterThan($first['id'], $second['id']);
+    }
+
+    public function testExplicitFixtureIdAdvancesIdCounter(): void
+    {
+        $auth = new BasicAuth([
+            'fixture@example.com' => [
+                'id' => 50,
+                'name' => 'Fixture',
+                'password' => 'secret',
+            ],
+        ]);
+
+        $this->assertSame(50, $auth->get(50)['id']);
+        $created = $auth->register('after-fixture@example.com', 'secret');
+        $this->assertSame(51, $created['id']);
+    }
+
+    public function testHashLookingFixturePasswordIsTreatedAsPlaintext(): void
+    {
+        $input = password_hash('actual-password', PASSWORD_BCRYPT);
+        $user = $this->auth->register('hash-fixture@example.com', $input);
+        $stored = $this->auth->get($user['id']);
+
+        $this->assertTrue(password_verify($input, $stored['password']));
+        $this->assertSame($user['id'], $this->auth->login('hash-fixture@example.com', $input)['id']);
+    }
+
 }
