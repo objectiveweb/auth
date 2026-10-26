@@ -8,7 +8,7 @@ All notable changes to `objectiveweb/auth` are documented here. This project fol
 
 ### Added
 
-- Abstract `Objectiveweb\Auth` provider contract, `Objectiveweb\Auth\DBAuth` backed by `objectiveweb/db ^0.8`, and an in-memory `BasicAuth` provider.
+- Abstract `Objectiveweb\Auth` provider contract, `Objectiveweb\Auth\DBAuth` backed by `objectiveweb/db ^0.8`, and an in-memory `BasicAuth` reference/test-only provider (not for production).
 - Separate user and `(provider, uid)` credential records, provider-specific profiles, UUIDs, configurable login/recovery providers, credential lifecycle (create, rename, delete) and per-credential verification status.
 - Bundled Phinx migrations for `user`, `user_credentials`, `role`, `user_roles`, and `delegations`, including credential verification/expiry columns.
 - Role-based authorization, `RequireRole` middleware, relational permissions/delegations, configurable eager loading, and `user_context_callback` for refreshing application-owned context in sessions.
@@ -30,6 +30,8 @@ All notable changes to `objectiveweb/auth` are documented here. This project fol
 - OAuth callbacks require a **configured, trusted `redirectUri`** (HTTPS, or explicitly configured HTTP loopback for local development), no longer inferred from Host/proxy request headers.
 - OAuth provider-resource-owner display names, emails and avatars are optional hints with safe fallbacks; matching email addresses do **not** link accounts.
 - `BasicAuth::update_credential()` now preserves an existing provider profile when given `null`, matching `DBAuth` and preventing password login from erasing metadata.
+- Simplified reference-only `BasicAuth`: removed redundant overrides/helpers, switched to monotonic per-instance fixture IDs, and treated supplied fixture passwords as plaintext.
+- Production and consumer installation smoke tests now exercise `DBAuth` registration, login, session revalidation, password change and logout against SQLite.
 - User-managed application associations (`managed_relations`) now belong to application services. Use `user_context_callback` to expose current assignments to the authenticated session. User deletion cleans only explicitly `auth_owned` authorization relation tables; application-owned relation tables are never implicitly modified.
 - Project testing/release verification moved from Travis to GitHub Actions; Composer metadata and support URL updated.
 
@@ -48,7 +50,7 @@ All notable changes to `objectiveweb/auth` are documented here. This project fol
 
 ### Removed / incompatible
 
-- Direct construction of `new Objectiveweb\Auth($pdo, ...)`; instantiate `DBAuth` or `BasicAuth` instead.
+- Direct construction of `new Objectiveweb\Auth($pdo, ...)`; use `DBAuth` or a custom production provider. `BasicAuth` is for tests and reference.
 - `Objectiveweb\Auth\AuthController` (old class path), `PasswordMismatchException`, legacy `src/password.php`, and the 0.1.x MySQL-only query format.
 - Implicit ownership of application-managed relations and implicit OAuth account linking based on email.
 - Legacy plaintext password-reset token storage/consumption.
