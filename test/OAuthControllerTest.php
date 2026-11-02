@@ -615,6 +615,19 @@ class OAuthControllerTest extends TestCase
         $result = $controller->postCreateAccount();
         $this->assertSame('created', $result['status']);
         $auth->logout();
+
+        // Logging in and out invalidates the CSRF token from the original
+        // anonymous choice. Its reuse must be rejected before proof lookup.
+        try {
+            $controller->postExistingAccount(['uid' => 'other@example.com', 'password' => 'secret']);
+            $this->fail('A CSRF token from before authentication was reused');
+        } catch (\Objectiveweb\Auth\UserException $e) {
+            $this->assertSame(403, $e->getCode());
+        }
+
+        // A fresh anonymous-session CSRF token passes that protection, then
+        // correctly reaches the already-consumed pending proof check.
+        $this->withLinkHeaders($auth);
         try {
             $controller->postExistingAccount(['uid' => 'other@example.com', 'password' => 'secret']);
             $this->fail('A consumed OAuth proof was reused');
