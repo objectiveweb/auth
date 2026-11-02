@@ -49,6 +49,7 @@ All notable changes to `objectiveweb/auth` are documented here. This project fol
 - Restrict logout redirects to safe same-origin absolute paths and reject attacker-controlled OAuth callback URLs.
 - Enforce management CSRF checks; check and serialize administrator removal, demotion and suspension inside DBAuth's existing update/delete transactions so concurrent operations cannot remove the final active admin (including direct DBAuth calls and lifecycle-field updates). Routine profile writes skip the lock; controllers retain self-protection and validation. Reject unknown DELETE subresources with 404 instead of accidentally deleting the user.
 - Require session-bound CSRF for authenticated and role-restricted registration using a request header or HTML form field, without changing anonymous registration.
+- Invalidate previously issued session CSRF tokens after successful login (including OAuth) and on logout, preventing reuse across account and session transitions.
 - Avoid returning passwords, reset tokens or other internal secrets in normal user/session/management payloads.
 
 ### Removed / incompatible
