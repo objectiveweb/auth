@@ -41,6 +41,31 @@ class BasicAuthTest extends TestCase
         $this->auth->login('alice@example.com', 'wrong');
     }
 
+    public function testPasswordLoginFailuresHaveIdenticalPublicErrors(): void
+    {
+        $auth = new BasicAuth([], ['disabled_at' => 'disabled_at']);
+        $auth->register('known@example.com', 'secret');
+        $auth->register('disabled@example.com', 'secret', [
+            'disabled_at' => '2026-01-01 00:00:00',
+        ]);
+        $auth->register('passwordless@example.com', null);
+
+        foreach ([
+            ['absent@example.com', 'secret'],
+            ['known@example.com', 'wrong'],
+            ['disabled@example.com', 'secret'],
+            ['passwordless@example.com', 'anything'],
+        ] as [$uid, $password]) {
+            try {
+                $auth->login($uid, $password);
+                $this->fail('Invalid login unexpectedly succeeded');
+            } catch (AuthException $e) {
+                $this->assertSame(401, $e->getCode());
+                $this->assertSame('Invalid credentials', $e->getMessage());
+            }
+        }
+    }
+
     public function testRegisterAndGetCredential(): void
     {
         $user = $this->auth->register('bob@example.com', 'pass123', ['name' => 'Bob']);
@@ -66,7 +91,8 @@ class BasicAuthTest extends TestCase
         $credential = $this->auth->get_credential('local', 'alice@example.com');
         $this->auth->delete($credential['user_id']);
 
-        $this->expectException(UserException::class);
+        $this->expectException(AuthException::class);
+        $this->expectExceptionCode(401);
         $this->auth->login('alice@example.com', 'secret');
     }
 
