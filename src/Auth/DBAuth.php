@@ -264,6 +264,16 @@ class DBAuth extends \Objectiveweb\Auth
 
     public function register($uid, $password = null, $data = array(), bool $invite = false)
     {
+        return $this->registerInternal($uid, $password, $data, $invite, false);
+    }
+
+    public function register_verified_credential(array $data): array
+    {
+        return $this->registerInternal($data, null, [], false, true);
+    }
+
+    private function registerInternal($uid, $password, array $data, bool $invite, bool $verified): array
+    {
         if (is_array($uid)) {
             $data = array_merge($uid, $data);
             $uid = $data['uid'] ?? null;
@@ -283,6 +293,9 @@ class DBAuth extends \Objectiveweb\Auth
 
         $provider = empty($data['provider']) ? 'local' : $data['provider'];
         unset($data['provider']);
+        if ($verified && ($provider === 'local' || $password !== null)) {
+            throw new UserException('Verified registration requires an external passwordless identity', 400);
+        }
 
         $credential = $this->get_credential($provider, $uid);
         if (!empty($credential)) {
@@ -329,7 +342,7 @@ class DBAuth extends \Objectiveweb\Auth
             $fields[$this->params['created']] = date('Y-m-d H:i:s');
         }
 
-        return $this->db->transaction(function () use ($uid, $provider, $profile, $fields, $syncRoles, $roles, $invite): array {
+        return $this->db->transaction(function () use ($uid, $provider, $profile, $fields, $syncRoles, $roles, $invite, $verified): array {
             if ($syncRoles) {
                 $this->resolveRoleIds($roles);
             }
@@ -349,6 +362,12 @@ class DBAuth extends \Objectiveweb\Auth
                 'uid' => $uid,
                 'profile' => $profile,
             ];
+            // The OAuth subject has already been independently proven.
+            // Persist verification in the same transaction and INSERT as the
+            // user and credential, never in a separate post-commit UPDATE.
+            if ($verified) {
+                $credentialPayload['verified_at'] = date('Y-m-d H:i:s');
+            }
 
             if (!empty($this->params['credentials_last_login'])) {
                 $credentialPayload[$this->params['credentials_last_login']] = null;

@@ -1697,6 +1697,145 @@ class DBAuthSqliteTest extends TestCase
         $this->assertSame(1, $result->total());
         $this->assertSame('searchable@example.com', $result[0]['credentials'][0]['uid']);
     }
+    public function testVerifiedOAuthRegistrationRollsBackFailedCredentialInsertAndCanRetry(): void
+    {
+        require_once __DIR__ . '/OAuthTestProvider.php';
+
+        $db = new class('sqlite::memory:') extends DB {
+            public bool $failVerifiedCredentialInsert = true;
+
+            public function insert(string $table, array $data): ?string
+            {
+                if ($table === 'user_credentials'
+                    && !empty($data['verified_at'])
+                    && $this->failVerifiedCredentialInsert) {
+                    throw new \RuntimeException('Simulated verified OAuth credential insert failure');
+                }
+                return parent::insert($table, $data);
+            }
+        };
+        $db->query(
+            'CREATE TABLE user (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                uuid TEXT NOT NULL UNIQUE,
+                name TEXT,
+                image TEXT,
+                created TEXT,
+                password TEXT,
+                token TEXT,
+                token_expires_at TEXT
+            )'
+        )->exec();
+        $db->query(
+            'CREATE TABLE user_credentials (
+                uid TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                user_id INTEGER NOT NULL,
+                profile TEXT,
+                token TEXT,
+                token_expires_at TEXT,
+                verified_at TEXT,
+                last_login TEXT,
+                created TEXT,
+                PRIMARY KEY(uid, provider)
+            )'
+        )->exec();
+
+        $auth = new DBAuth($db, [
+            'roles_table' => null,
+            'user_roles_table' => null,
+        ]);
+        $controller = new class($auth, [
+            'test' => [
+                'clientId' => 'test-client',
+                'clientSecret' => 'test-secret',
+                'redirectUri' => 'https://example.test/oauth/test',
+            ],
+        ]) extends \Objectiveweb\Auth\Controller\OAuthController {
+            protected function redirect(string $location): void
+            {
+                // Do not exit PHPUnit on OAuth redirects.
+            }
+        };
+
+        \League\OAuth2\Client\Provider\Test::$resourceOwner = new class {
+            public function getId(): string { return 'atomic-verified-subject'; }
+            public function toArray(): array { return ['name' => 'Atomic OAuth']; }
+        };
+        \League\OAuth2\Client\Provider\Test::$state = 'test-oauth-state';
+
+        $previousServer = $_SERVER;
+        try {
+            // Provider authentication has succeeded; the user chooses to
+            // create a new account. The credential INSERT then fails.
+            $controller->get('test', []);
+            $controller->get('test', [
+                'code' => 'oauth-code', 'state' => 'test-oauth-state',
+            ]);
+            $_SERVER['REQUEST_METHOD'] = 'POST';
+            $_SERVER['CONTENT_TYPE'] = 'application/json';
+            $_SERVER['HTTP_X_CSRF_TOKEN'] = $controller->getPendingAccount()['_csrf'];
+
+            try {
+                $controller->postCreateAccount(['name' => 'Atomic OAuth']);
+                $this->fail('A simulated credential INSERT failure was ignored');
+            } catch (\RuntimeException $e) {
+                $this->assertSame('Simulated verified OAuth credential insert failure', $e->getMessage());
+            }
+
+            // Both user and credential must roll back. The consumed pending
+            // choice cannot be replayed and no authenticated session exists.
+            $this->assertSame(0, $db->count('user', []));
+            $this->assertSame(0, $db->count('user_credentials', []));
+            $this->assertFalse($auth->check());
+            $this->assertArrayNotHasKey('oauth2pending', $_SESSION);
+
+            // Retry after a fresh provider authorization: no orphan remains
+            // to block creation, and the credential is verified at commit.
+            $db->failVerifiedCredentialInsert = false;
+            $controller->get('test', []);
+            $controller->get('test', [
+                'code' => 'oauth-code', 'state' => 'test-oauth-state',
+            ]);
+            $_SERVER['HTTP_X_CSRF_TOKEN'] = $controller->getPendingAccount()['_csrf'];
+            $created = $controller->postCreateAccount(['name' => 'Atomic OAuth']);
+
+            $this->assertSame('created', $created['status']);
+            $this->assertTrue($auth->check());
+            $this->assertSame(1, $db->count('user', []));
+            $this->assertSame(1, $db->count('user_credentials', []));
+            $credential = $auth->get_credential('test', 'atomic-verified-subject');
+            $this->assertSame($created['user']['id'], $credential['user_id']);
+            $this->assertNotEmpty($credential['verified_at']);
+            $this->assertNull($credential['token']);
+        } finally {
+            $_SERVER = $previousServer;
+        }
+    }
+
+    public function testUnverifiedExternalRegistrationDoesNotImplicitlyTrustCredential(): void
+    {
+        $user = self::$auth->register([
+            'uid' => 'unverified-provider-subject',
+            'provider' => 'example',
+            'name' => 'Not Yet Verified',
+        ]);
+        $this->assertNull(
+            self::$auth->get_credential('example', 'unverified-provider-subject')['verified_at']
+        );
+
+        try {
+            self::$auth->register_verified_credential([
+                'uid' => 'invalid-local-subject',
+                'provider' => 'local',
+            ]);
+            $this->fail('Local identity was incorrectly accepted as a verified OAuth account');
+        } catch (UserException $e) {
+            $this->assertSame(400, $e->getCode());
+        }
+        $this->assertCount(1, self::$db->select('auth_user')->all());
+    }
+
     public function testOAuthAccountChoiceLinksExistingUserWithSqlite(): void
     {
         require_once __DIR__ . '/OAuthTestProvider.php';

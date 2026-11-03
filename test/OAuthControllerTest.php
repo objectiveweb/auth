@@ -428,6 +428,32 @@ class OAuthControllerTest extends TestCase
         $this->assertTrue($auth->check());
     }
 
+    public function testNewOAuthAccountDoesNotNeedSeparateCredentialVerification(): void
+    {
+        $auth = new class([], ['token' => 'token']) extends OAuthTrackingBasicAuth {
+            public function mark_credential_verified($userid, string $provider, string $uid): void
+            {
+                throw new \RuntimeException('Post-registration verification must not be called');
+            }
+        };
+        OAuthTestProvider::$resourceOwner = $this->resourceOwner(
+            'atomic-oauth-subject', 'atomic@example.com'
+        );
+        $controller = $this->testController($auth);
+        $controller->get('test', []);
+        $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+
+        $this->withLinkHeaders($auth);
+        $result = $controller->postCreateAccount(['name' => 'Atomic OAuth Account']);
+
+        $this->assertSame('created', $result['status']);
+        $this->assertTrue($auth->check());
+        $credential = $auth->get_credential('test', 'atomic-oauth-subject');
+        $this->assertSame($result['user']['id'], $credential['user_id']);
+        $this->assertNotEmpty($credential['verified_at']);
+        $this->assertArrayNotHasKey('oauth2pending', $_SESSION);
+    }
+
     public function testFirstTimeOAuthCanAuthenticateExistingAccountAndLink(): void
     {
         $auth = new OAuthTrackingBasicAuth([], ['token' => 'token']);

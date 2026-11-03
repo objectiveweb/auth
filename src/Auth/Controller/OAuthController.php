@@ -172,10 +172,12 @@ class OAuthController extends AuthController
         ];
 
         // Single-use, including in the event of a database failure.
+        // The provider must commit the new account and its verified OAuth
+        // credential together. Register-then-verify could leave an unusable
+        // passwordless account if the second database write failed.
         unset($_SESSION[self::PENDING_KEY]);
-        $user = $this->auth->register($data);
+        $user = $this->auth->register_verified_credential($data);
         $userId = $user[$this->auth->params['id']];
-        $this->auth->mark_credential_verified($userId, $pending['provider'], $pending['uid']);
         $this->auth->audit('oauth.account_created', $userId, ['provider' => $pending['provider']]);
         return ['status' => 'created', 'user' => $this->auth->establish_session($this->auth->get($userId))];
     }
