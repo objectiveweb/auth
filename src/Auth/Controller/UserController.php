@@ -118,6 +118,8 @@ class UserController
         $target = $this->auth->get($userId);
         $this->assertNotFinalActiveAdmin($target);
         try {
+            // DBAuth enforces the final-admin invariant again inside its own
+            // transaction. Controller validation also supports BasicAuth.
             $this->auth->delete($userId);
         } catch (UserException $exception) {
             throw $exception;
@@ -172,21 +174,23 @@ class UserController
             $this->assertKnownRoles($data[$roleField]);
         }
 
-        $user = $this->auth->register($uid, is_string($password) && $password !== '' ? $password : null, $data);
+        $isInvitation = !is_string($password) || $password === '';
+        $user = $this->auth->register(
+            $uid,
+            $isInvitation ? null : $password,
+            $data,
+            $isInvitation
+        );
         $id = $user[$this->auth->params['id']];
-        if (!is_string($password) || $password === '') {
-            $this->auth->invite($id);
-        }
         $this->auth->audit('user.created', $id, [
             'roles' => $user[$this->auth->params['roles']] ?? [],
-            'invited' => !is_string($password) || $password === '',
+            'invited' => $isInvitation,
         ]);
         return $this->detail($id);
     }
 
     private function updateUser(mixed $userId, array $data): array
     {
-        $target = $this->auth->get($userId);
         $this->assertNoApplicationRelations($data);
         unset($data['uid'], $data[$this->auth->params['password']]);
         $this->assertWriteFields($data);
@@ -194,12 +198,26 @@ class UserController
         $roleField = $this->auth->params['roles'];
         if (array_key_exists($roleField, $data)) {
             $this->assertRolePayload($data[$roleField]);
-            $roles = $data[$roleField];
-            $this->assertKnownRoles($roles);
-            $this->assertOwnAdminRolePreserved($userId, $roles);
-            if (in_array('admin', (array) ($target[$roleField] ?? []), true) && !in_array('admin', $roles, true)) {
-                $this->assertNotFinalActiveAdmin($target);
-            }
+            $this->assertKnownRoles($data[$roleField]);
+        }
+
+        $target = $this->auth->get($userId);
+        if (array_key_exists($roleField, $data)) {
+            $this->assertOwnAdminRolePreserved($userId, $data[$roleField]);
+        }
+
+        // Retain provider-independent validation. DBAuth rechecks against
+        // locked, current data in update() before applying a risky mutation.
+        $proposed = array_replace($target, $data);
+        if (
+            in_array('admin', (array) ($target[$roleField] ?? []), true)
+            && $this->auth->is_active($target)
+            && (
+                !in_array('admin', (array) ($proposed[$roleField] ?? []), true)
+                || !$this->auth->is_active($proposed)
+            )
+        ) {
+            $this->assertNotFinalActiveAdmin($target);
         }
 
         $this->auth->update($userId, $data);
@@ -240,6 +258,9 @@ class UserController
         }
         if ($suspended) {
             $this->assertNotSelf($userId, 'suspend');
+        }
+
+        if ($suspended) {
             $this->assertNotFinalActiveAdmin($this->auth->get($userId));
         }
         $this->auth->update($userId, [$field => $suspended ? date('Y-m-d H:i:s') : null]);

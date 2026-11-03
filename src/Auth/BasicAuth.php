@@ -118,7 +118,7 @@ class BasicAuth extends \Objectiveweb\Auth
         return parent::login($uid, $password);
     }
 
-    public function register($uid, $password = null, $data = array())
+    public function register($uid, $password = null, $data = array(), bool $invite = false)
     {
         if (is_array($uid)) {
             $data = array_merge($uid, $data);
@@ -129,6 +129,12 @@ class BasicAuth extends \Objectiveweb\Auth
 
         if (empty($uid)) {
             throw new UserException('Missing uid', 400);
+        }
+        if ($invite) {
+            if (is_string($password) && $password !== '') {
+                throw new UserException('Invitations require passwordless registration', 400);
+            }
+            $this->requireInvitationCallback();
         }
 
         $provider = $data['provider'] ?? 'local';
@@ -163,8 +169,20 @@ class BasicAuth extends \Objectiveweb\Auth
         }
 
         $this->users[$userId] = $record;
-        $this->update_credential($userId, $provider, $uid, $profile);
-        $this->credentials[$provider][$uid]['last_login'] = null;
+        try {
+            $this->update_credential($userId, $provider, $uid, $profile);
+            $this->credentials[$provider][$uid]['last_login'] = null;
+            if ($invite) {
+                $this->invite($userId);
+            }
+        } catch (\Throwable $exception) {
+            // Roll back the new in-memory identity on invitation failure.
+            unset($this->users[$userId], $this->credentials[$provider][$uid]);
+            if (($this->credentials[$provider] ?? []) === []) {
+                unset($this->credentials[$provider]);
+            }
+            throw $exception;
+        }
 
         return $this->publicUser($record);
     }
