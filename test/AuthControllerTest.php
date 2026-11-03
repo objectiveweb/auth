@@ -217,7 +217,7 @@ class AuthControllerTest extends TestCase
             ]);
             $this->fail('Incorrect current password was accepted');
         } catch (AuthException $exception) {
-            $this->assertSame(403, $exception->getCode());
+            $this->assertSame(401, $exception->getCode());
         }
 
         $this->assertTrue(password_verify('old-secret', $this->auth->get(1)['password']));
