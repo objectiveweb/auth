@@ -93,6 +93,11 @@ abstract class Auth
         $this->regenerateSessionId();
         $this->user($this->sanitize_user($user));
 
+        // The session may have been used anonymously (e.g. for an OAuth
+        // account choice) or by a different principal. Do not carry a
+        // previously issued CSRF token across this authentication boundary.
+        unset($_SESSION[(string) $this->params['management_csrf_session_key']]);
+
         return $this->user();
     }
 
@@ -331,7 +336,10 @@ abstract class Auth
      */
     public function logout()
     {
-        unset($_SESSION[$this->params['session_key']]);
+        unset(
+            $_SESSION[$this->params['session_key']],
+            $_SESSION[(string) $this->params['management_csrf_session_key']]
+        );
     }
 
     /**

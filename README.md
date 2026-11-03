@@ -509,7 +509,7 @@ The authenticated change is refused when the current password is missing or
 incorrect, or when the user has no usable local password (for example, an
 OAuth-only account). Passwordless users must complete an independently verified
 password-reset or reauthentication flow instead; a session alone cannot set a
-password. The CSRF token is required even for direct controller invocations.
+password. The CSRF token is required even for direct controller invocations. CSRF tokens are invalidated when a new authenticated principal is established (including OAuth sign-in) and cleared on logout. After signing in or switching accounts, fetch a fresh `_csrf` from `AuthController::index()`; tokens issued before login or logout can no longer authorize privileged actions.
 
 ## Password reset flow
 

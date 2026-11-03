@@ -30,6 +30,107 @@ class AuthControllerTest extends TestCase
         $_SESSION = [];
     }
 
+    public function testCsrfTokenRotatesAcrossSessionTransitions(): void
+    {
+        $this->auth->register('first@example.com', 'first-secret');
+        $this->auth->register('second@example.com', 'second-secret');
+
+        // A CSRF token issued while anonymous (including the OAuth pending
+        // account-choice flow) must not survive successful authentication.
+        $anonymousToken = $this->auth->management_csrf_token();
+        $this->auth->login('first@example.com', 'first-secret');
+        $firstToken = $this->auth->management_csrf_token();
+        $this->assertNotSame($anonymousToken, $firstToken);
+        $this->assertSame($firstToken, $_SESSION['ow_auth_management_csrf']);
+
+        // Establishing a different principal without an explicit logout must
+        // not allow the first account's token to authorize the second.
+        $this->auth->login('second@example.com', 'second-secret');
+        $secondToken = $this->auth->management_csrf_token();
+        $this->assertNotSame($firstToken, $secondToken);
+
+        $this->auth->logout();
+        $this->assertFalse($this->auth->check());
+        $this->assertArrayNotHasKey('ow_auth_management_csrf', $_SESSION);
+
+        $loggedOutToken = $this->auth->management_csrf_token();
+        $this->assertNotSame($secondToken, $loggedOutToken);
+        $this->auth->login('second@example.com', 'second-secret');
+        $this->assertNotSame($loggedOutToken, $this->auth->management_csrf_token());
+    }
+
+    public function testStaleCsrfCannotChangePasswordAfterSwitchingAccounts(): void
+    {
+        $first = $this->auth->register('first@example.com', 'first-secret');
+        $second = $this->auth->register('second@example.com', 'second-secret');
+        $this->auth->login('first@example.com', 'first-secret');
+        $firstToken = $this->auth->management_csrf_token();
+
+        $this->auth->login('second@example.com', 'second-secret');
+        $_SERVER['HTTP_X_CSRF_TOKEN'] = $firstToken;
+        try {
+            $this->controller->postPassword([
+                'current_password' => 'second-secret',
+                'password' => 'changed-secret',
+                'confirm' => 'changed-secret',
+            ]);
+            $this->fail('CSRF token from the previous principal was accepted');
+        } catch (UserException $exception) {
+            $this->assertSame(403, $exception->getCode());
+        }
+
+        $this->assertTrue(password_verify('second-secret', $this->auth->get($second['id'])['password']));
+        $this->assertTrue(password_verify('first-secret', $this->auth->get($first['id'])['password']));
+
+        $_SERVER['HTTP_X_CSRF_TOKEN'] = $this->auth->management_csrf_token();
+        $this->assertTrue($this->controller->postPassword([
+            'current_password' => 'second-secret',
+            'password' => 'changed-secret',
+            'confirm' => 'changed-secret',
+        ]));
+        $this->assertTrue(password_verify('changed-secret', $this->auth->get($second['id'])['password']));
+    }
+
+    public function testLogoutInvalidatesExistingCsrfEvenForSameAccountLogin(): void
+    {
+        $this->auth->register('owner@example.com', 'secret');
+        $this->auth->login('owner@example.com', 'secret');
+        $oldToken = $this->auth->management_csrf_token();
+        $this->auth->logout();
+        $this->auth->login('owner@example.com', 'secret');
+
+        $_SERVER['HTTP_X_CSRF_TOKEN'] = $oldToken;
+        try {
+            $this->controller->postPassword([
+                'current_password' => 'secret',
+                'password' => 'new-secret',
+                'confirm' => 'new-secret',
+            ]);
+            $this->fail('CSRF token from the prior authenticated session was accepted');
+        } catch (UserException $exception) {
+            $this->assertSame(403, $exception->getCode());
+        }
+
+        $this->assertNotSame($oldToken, $this->auth->management_csrf_token());
+        $this->assertTrue(password_verify('secret', $this->auth->get(1)['password']));
+    }
+
+    public function testCustomCsrfSessionKeyIsInvalidated(): void
+    {
+        $auth = new BasicAuth([], [
+            'management_csrf_session_key' => 'custom_csrf_key',
+        ]);
+        $auth->register('custom@example.com', 'secret');
+        $anonymous = $auth->management_csrf_token();
+        $this->assertArrayHasKey('custom_csrf_key', $_SESSION);
+
+        $auth->login('custom@example.com', 'secret');
+        $this->assertArrayNotHasKey('custom_csrf_key', $_SESSION);
+        $this->assertNotSame($anonymous, $auth->management_csrf_token());
+        $auth->logout();
+        $this->assertArrayNotHasKey('custom_csrf_key', $_SESSION);
+    }
+
     public function testLogoutWithoutRedirectEndsSession(): void
     {
         $this->auth->register('logout@example.com', 'secret');
