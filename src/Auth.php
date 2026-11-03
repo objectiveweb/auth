@@ -65,6 +65,25 @@ abstract class Auth
         return !is_string($field) || $field === '' || empty($user[$field]);
     }
 
+    public function establish_session(array $user): array
+    {
+        if (!$this->is_active($user)) {
+            throw new Auth\AuthException('Account suspended', 403);
+        }
+
+        $this->regenerateSessionId();
+        $this->user($user);
+
+        return $this->user();
+    }
+
+    protected function regenerateSessionId(): void
+    {
+        if (session_status() === PHP_SESSION_ACTIVE) {
+            session_regenerate_id(true);
+        }
+    }
+
     /**
      * Reload the session principal so role and lifecycle changes take effect on
      * the very next protected request.
@@ -235,19 +254,8 @@ abstract class Auth
 
         $user = $this->get($credential['user_id']);
 
-        if (!$this->is_active($user)) {
-            throw new Auth\AuthException('Account suspended', 403);
-        }
-
         if (\password_verify($password, $user[$this->params['password']])) {
-
-            unset($user[$this->params['password']]);
-            unset($user[$this->params['token']]);
-
-            if (session_status() === PHP_SESSION_ACTIVE) {
-                session_regenerate_id(true);
-            }
-            $this->user($user);
+            $user = $this->establish_session($user);
 
             // TODO add login ip
             $this->update_credential($user[$this->params['id']], (string) $provider, $uid, null);
