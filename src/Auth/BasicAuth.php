@@ -529,11 +529,7 @@ class BasicAuth extends \Objectiveweb\Auth
     private function publicUser(array $user): array
     {
         unset($user['_managed_relations']);
-        unset($user[$this->params['password']]);
-        if ($this->params['token']) {
-            unset($user[$this->params['token']]);
-        }
-        return $user;
+        return $this->sanitize_user($user);
     }
 
     private function isPasswordHash(string $value): bool
