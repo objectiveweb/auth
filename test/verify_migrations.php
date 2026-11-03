@@ -30,6 +30,8 @@ $expectedColumns = [
         'user_id',
         'profile',
         'token',
+        'token_expires_at',
+        'verified_at',
         'last_login',
         'created',
     ],

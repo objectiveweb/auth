@@ -103,6 +103,52 @@ class AuthControllerTest extends TestCase
         $this->controller->postRegister(['uid' => 'invalid', 'password' => 'secret']);
     }
 
+    public function testCredentialTokenRedemptionDoesNotAuthenticateAUser(): void
+    {
+        $user = $this->auth->register('verify@example.com', 'secret');
+        $token = $this->auth->issue_credential_token($user['id'], 'local', 'verify@example.com');
+
+        $this->assertSame(['verified' => true], $this->controller->postVerifyCredential([
+            'provider' => 'local',
+            'uid' => 'verify@example.com',
+            'token' => $token,
+        ]));
+        $this->assertFalse($this->auth->check());
+        $this->assertNotEmpty($this->auth->get_credential('local', 'verify@example.com')['verified_at']);
+
+        try {
+            $this->controller->postVerifyCredential([
+                'provider' => 'local',
+                'uid' => 'verify@example.com',
+                'token' => $token,
+            ]);
+            $this->fail('Reused token was accepted');
+        } catch (UserException $e) {
+            $this->assertSame(400, $e->getCode());
+        }
+    }
+
+    public function testCredentialTokenRedemptionRejectsMalformedAndMismatchedInputs(): void
+    {
+        $user = $this->auth->register('verify@example.com', 'secret');
+        $token = $this->auth->issue_credential_token($user['id'], 'local', 'verify@example.com');
+
+        foreach ([
+            ['provider' => 'local', 'uid' => 'verify@example.com', 'token' => 'wrong'],
+            ['provider' => 'email', 'uid' => 'verify@example.com', 'token' => $token],
+            ['provider' => 'local', 'uid' => 'else@example.com', 'token' => $token],
+            ['provider' => 'local', 'uid' => 'verify@example.com', 'token' => []],
+        ] as $form) {
+            try {
+                $this->controller->postVerifyCredential($form);
+                $this->fail('Invalid token request was accepted');
+            } catch (UserException $e) {
+                $this->assertSame(400, $e->getCode());
+            }
+        }
+        $this->assertNull($this->auth->get_credential('local', 'verify@example.com')['verified_at'] ?? null);
+    }
+
     public function testPostTokenPasswordMismatch(): void
     {
         $this->expectException(UserException::class);
