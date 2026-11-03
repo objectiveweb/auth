@@ -16,7 +16,8 @@
   },
   "require-dev": {
     "phpunit/phpunit": "10.*",
-    "robmorgan/phinx": "^0.16"
+    "robmorgan/phinx": "^0.16",
+    "objectiveweb/router": "^3.0"
   },
   "suggest": {
     "league/oauth2-google": "Google Login",
