@@ -253,6 +253,52 @@ $auth->delete_credential($userId, 'phone', '+5511888888888');
 
 `create_credential()` rejects duplicates; `update_credential()` inserts or updates a provider identity and updates its last-login field when configured. `delete_credential()` refuses to remove the user's last credential. Treat raw provider profiles as potentially sensitive; send normalized/sanitized credentials to clients.
 
+##### Independent credential verification
+
+Each `(provider, uid)` credential has its own verification state: `token`
+(SHA-256 digest only), `token_expires_at`, and `verified_at`. A new
+credential is unverified until its specific identity has been proven.
+The `user.token` field remains for **password reset/invitation**, and is
+not interchangeable with credential verification tokens.
+
+For contact methods (`local`, `email`, `phone` by default), trusted
+application code can issue an out-of-band token and deliver it **only**
+through that credential's address or channel:
+
+```php
+$auth->create_credential($userId, 'email', 'alice@example.com');
+$token = $auth->issue_credential_token($userId, 'email', 'alice@example.com');
+// Email the secret to alice@example.com; do not expose it via an API response.
+// The caller redeems it with AuthController::postVerifyCredential():
+$result = $auth->verify_credential_token('email', 'alice@example.com', $token);
+// true on first valid redemption; false for wrong, expired, or reused tokens.
+```
+
+Each token is independent; validating one credential does **not** validate
+any other. Issuing a new token replaces an earlier pending one. Tokens
+expire after `credential_token_ttl` seconds (default 3600; minimum 60),
+and are consumed once. Credentials lists include `verified_at`, but never
+return verification token digests or expirations. Renaming a credential's
+provider or UID clears its prior verification state.
+
+An OAuth provider identity is **not** verified by a locally issued email or
+SMS token. OAuth credentials are proven using the validated provider callback,
+including code/token exchange and provider-specific user ID; the trusted
+OAuth integration marks exactly that credential verified. OAuth sign-in never
+links accounts by email equality and never automatically creates a separate
+`email` credential. An existing unverified OAuth credential cannot authorize
+an anonymous login; its owning user must authenticate separately and confirm
+the provider link. External providers are deliberately excluded from
+`credential_token_providers` unless explicitly configured by the application;
+do not enable arbitrary OAuth provider names.
+
+The public `postVerifyCredential()` endpoint accepts `provider`, `uid`, and
+`token`, marks the matching credential verified, and returns
+`{"verified":true}`. It does not establish a login session. Applications
+must rate-limit verification attempts and token issuance. Local password login
+continues to prove knowledge of the password; it does not imply that the
+credential's email address is verified.
+
 #### Roles
 
 **Global roles** are attached to users and stored in `role` and `user_roles`. `roles` in returned user data is a computed array, not a SQL column. They are independent of resource-specific relations.

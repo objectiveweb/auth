@@ -148,6 +148,27 @@ class AuthController
         return $user;
     }
 
+    /**
+     * Redeem a credential-specific proof sent through an independent channel.
+     * Never authenticates a user or links another account on its own.
+     */
+    #[Middleware(RequireRole::class, Auth::ALL)]
+    function postVerifyCredential(array $form): array
+    {
+        $provider = $form['provider'] ?? null;
+        $uid = $form['uid'] ?? null;
+        $token = $form['token'] ?? null;
+        if (!is_string($provider) || $provider === ''
+            || !is_string($uid) || $uid === ''
+            || !is_string($token) || $token === '') {
+            throw new UserException('Invalid verification request', 400);
+        }
+        if (!$this->auth->verify_credential_token($provider, $uid, $token)) {
+            throw new UserException('Invalid or expired verification token', 400);
+        }
+        return ['verified' => true];
+    }
+
     #[Middleware(RequireRole::class, Auth::ALL)]
     function postToken(array $form)
     {

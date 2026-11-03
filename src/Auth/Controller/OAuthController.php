@@ -113,63 +113,62 @@ class OAuthController extends AuthController
      */
     private function login($provider, $resourceOwner)
     {
+        // The OAuth provider has authenticated this provider-specific subject
+        // through its code/token exchange. An email in the profile is NOT proof
+        // that this subject owns any existing local account.
+        $uid = (string) $resourceOwner->getId();
+        if ($uid === '') {
+            throw new \Objectiveweb\Auth\AuthException('Invalid provider identity', 401);
+        }
 
-        $uid = $resourceOwner->getId();
-        $email = $resourceOwner->getEmail();
-
-        // check if provider user exists
         $credential = $this->auth->get_credential($provider, $uid);
+        $sessionUser = $this->auth->check() ? $this->auth->user() : null;
+        $idField = $this->auth->params['id'];
+        $profile = $resourceOwner->toArray();
 
-        // if provider credential does not exist, check if there's a local user with the email
-        if (!$credential && !empty($email)) {
-            $credential = $this->auth->get_credential('email', $email);
-        }
-
-        // This credential/email is not registered yet
-        if (empty($credential['user_id'])) {
-            // Check if the user is already logged in
-            if ($this->auth->check()) {
-                $user = $this->auth->user();
-
-                // Add the oauth cred to the existing user
-                $this->auth->update_credential($user[$this->auth->params['id']],
-                    $provider,
-                    $uid,
-                    $resourceOwner->toArray());
-
-            } else {
-                // This is a new user, need to register
-                $data = [
-                    'uid' => $uid,
-                    'provider' => $provider,
-                    'profile' => $resourceOwner->toArray(),
-                    'name' => $resourceOwner->getName(),
-                    'image' => is_callable([$resourceOwner, 'getAvatar']) ? $resourceOwner->getAvatar() : $resourceOwner->getPictureUrl()
-                ];
-
-                $user = $this->auth->register($data);
-
-                // if email is defined, also create a local email credential for it
-                if (!empty($email)) {
-                    // Add local credential to the user
-                    $this->auth->update_credential($user[$this->auth->params['id']],
-                        'email',
-                        $email,
-                        []);
-                }
+        if ($credential) {
+            $userId = $credential['user_id'];
+            if ($sessionUser !== null && $sessionUser[$idField] != $userId) {
+                throw new UserException('Credential belongs to another account', 409);
             }
+
+            // Older or administratively created OAuth mappings without proof
+            // must never authorize an anonymous sign-in. A signed-in owner
+            // can confirm that pending link by authenticating this provider.
+            if (empty($credential['verified_at'])) {
+                if ($sessionUser === null || $sessionUser[$idField] != $userId) {
+                    throw new \Objectiveweb\Auth\AuthException(
+                        'OAuth credential requires verified account linking', 403
+                    );
+                }
+                $this->auth->mark_credential_verified($userId, $provider, $uid);
+            }
+
+            $user = $this->auth->get($userId);
+            $this->auth->update_credential($userId, $provider, $uid, $profile);
+        } elseif ($sessionUser !== null) {
+            // Explicitly signed-in users can link a new provider after OAuth
+            // authentication proves control of the provider-specific identity.
+            $user = $this->auth->get($sessionUser[$idField]);
+            $this->auth->update_credential($user[$idField], $provider, $uid, $profile);
+            $this->auth->mark_credential_verified($user[$idField], $provider, $uid);
         } else {
-            // there is already a user for the oauth provider / local email
-            $user = $this->auth->get($credential['user_id']);
-            // Add account to the user
-            $this->auth->update_credential($credential['user_id'],
-                $provider,
-                $uid,
-                $resourceOwner->toArray());
+            // A matching email does not grant ownership of any other account.
+            // The provider identity becomes a new, independently verified
+            // credential. Email credentials require their own proof token.
+            $data = [
+                'uid' => $uid,
+                'provider' => $provider,
+                'profile' => $profile,
+                'name' => $resourceOwner->getName(),
+                'image' => is_callable([$resourceOwner, 'getAvatar'])
+                    ? $resourceOwner->getAvatar()
+                    : $resourceOwner->getPictureUrl(),
+            ];
+            $user = $this->auth->register($data);
+            $this->auth->mark_credential_verified($user[$idField], $provider, $uid);
         }
 
-        // Apply the same lifecycle and session-fixation protections as
-        // password authentication before storing the principal.
         return $this->auth->establish_session($user);
     }
 }
