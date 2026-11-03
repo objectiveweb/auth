@@ -481,12 +481,6 @@ class DBAuth extends \Objectiveweb\Auth
                     [$this->params['user_roles_user_id'] => $user_id]
                 );
             }
-            foreach ((array) $this->params['managed_relations'] as $relation) {
-                if (!is_array($relation) || empty($relation['table']) || empty($relation['subject_key'])) {
-                    continue;
-                }
-                $this->db->delete((string) $relation['table'], [(string) $relation['subject_key'] => $user_id]);
-            }
             foreach ((array) $this->params['relations'] as $relation) {
                 if (!is_array($relation) || empty($relation['table'])) {
                     continue;
@@ -672,53 +666,6 @@ class DBAuth extends \Objectiveweb\Auth
             'uid' => $uid,
         ]);
         return true;
-    }
-
-    public function get_managed_relations($userId): array
-    {
-        $user = $this->get($userId);
-        $id = $user[$this->params['id']];
-        $result = [];
-        foreach ((array) $this->params['managed_relations'] as $name => $relation) {
-            if (!is_array($relation) || empty($relation['table']) || empty($relation['subject_key']) || empty($relation['target_key'])) {
-                continue;
-            }
-            $rows = $this->db->select((string) $relation['table'], [
-                (string) $relation['subject_key'] => $id,
-            ])->all();
-            $values = array_map(
-                fn (array $row): mixed => $row[(string) $relation['target_key']] ?? null,
-                $rows
-            );
-            $result[(string) $name] = array_values(array_unique(array_filter($values, fn ($value): bool => $value !== null)));
-        }
-        return $result;
-    }
-
-    public function sync_managed_relations($userId, array $relations): array
-    {
-        $user = $this->get($userId);
-        $id = $user[$this->params['id']];
-        return $this->db->transaction(function () use ($id, $relations): array {
-            foreach ($relations as $name => $values) {
-                $relation = $this->params['managed_relations'][$name] ?? null;
-                if (!is_array($relation) || !is_array($values)) {
-                    throw new UserException("Invalid managed relation `$name`", 400);
-                }
-                $values = array_values(array_unique($values));
-                if (is_callable($relation['validate_callback'] ?? null)) {
-                    call_user_func($relation['validate_callback'], $values);
-                }
-                $table = (string) $relation['table'];
-                $subjectKey = (string) $relation['subject_key'];
-                $targetKey = (string) $relation['target_key'];
-                $this->db->delete($table, [$subjectKey => $id]);
-                foreach ($values as $value) {
-                    $this->db->insert($table, [$subjectKey => $id, $targetKey => $value]);
-                }
-            }
-            return $this->get_managed_relations($id);
-        });
     }
 
     public function get_credentials($user_id, $key = 'id'): array
