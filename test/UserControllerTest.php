@@ -319,6 +319,59 @@ class UserControllerTest extends TestCase
         $this->assertSame('Updated name', $updated['name']);
     }
 
+    public function testGenericUpdateCannotSuspendOwnAccountWithTwoActiveAdmins(): void
+    {
+        self::$db->insert('auth_role', ['name' => 'admin']);
+        $auth = new DBAuth(self::$db, [
+            'table' => 'auth_user',
+            'credentials_table' => 'auth_credentials',
+            'created' => 'created',
+            'token' => 'token',
+            'credentials_last_login' => 'last_login',
+            'credentials_created' => null,
+            'disabled_at' => 'disabled_at',
+            'roles_table' => 'auth_role',
+            'user_roles_table' => 'auth_user_role',
+        ]);
+        $controller = new UserController($auth);
+
+        $actor = $auth->register('first-admin@example.com', 'secret', ['roles' => ['admin']]);
+        $other = $auth->register('second-admin@example.com', 'secret', ['roles' => ['admin']]);
+        $auth->login('first-admin@example.com', 'secret');
+
+        // A no-op lifecycle update and normal profile changes are still allowed.
+        $own = $controller->put((int) $actor['id'], [
+            'name' => 'Updated Admin',
+            'disabled_at' => null,
+        ]);
+        $this->assertSame('Updated Admin', $own['name']);
+        $this->assertTrue($auth->is_active($auth->get($actor['id'])));
+
+        try {
+            $controller->put((int) $actor['id'], [
+                'disabled_at' => '2026-10-01 12:00:00',
+            ]);
+            $this->fail('Generic update allowed an administrator to self-suspend');
+        } catch (\Objectiveweb\Auth\UserException $exception) {
+            $this->assertSame(409, $exception->getCode());
+            $this->assertSame('Cannot suspend your own account', $exception->getMessage());
+        }
+
+        $this->assertTrue($auth->is_active($auth->get($actor['id'])));
+        $this->assertCount(2, array_filter(
+            $auth->get_users_by_role('admin'),
+            fn (array $user): bool => $auth->is_active($user)
+        ));
+
+        // Suspending a different admin must still work while two are active.
+        $updatedOther = $controller->put((int) $other['id'], [
+            'disabled_at' => '2026-10-01 12:00:00',
+        ]);
+        $this->assertSame('suspended', $updatedOther['status']);
+        $this->assertFalse($auth->is_active($auth->get($other['id'])));
+        $this->assertTrue($auth->is_active($auth->get($actor['id'])));
+    }
+
     public function testCannotSuspendOnlyActiveAdminWhenAnotherAdminIsSuspended(): void
     {
         self::$db->insert('auth_role', ['name' => 'admin']);

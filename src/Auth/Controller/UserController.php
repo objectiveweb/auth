@@ -209,6 +209,22 @@ class UserController
         // Retain provider-independent validation. DBAuth rechecks against
         // locked, current data in update() before applying a risky mutation.
         $proposed = array_replace($target, $data);
+
+        // The generic update endpoint must enforce the same self-suspension
+        // restriction as POST /users/{id}/suspend. A second active admin
+        // prevents the final-admin guard from catching this case.
+        $disabledField = $this->auth->params['disabled_at'];
+        if (
+            is_string($disabledField)
+            && $disabledField !== ''
+            && array_key_exists($disabledField, $data)
+            && $this->auth->is_active($target)
+            && !$this->auth->is_active($proposed)
+            && $this->auth->check()
+        ) {
+            $this->assertNotSelf($userId, 'suspend');
+        }
+
         if (
             in_array('admin', (array) ($target[$roleField] ?? []), true)
             && $this->auth->is_active($target)
