@@ -242,8 +242,15 @@ Store each identity in `credentials_table` as `(provider, uid)`, linked to one `
 ## Query and update
 
 ```php
-// List users (paginated response)
-$result = $auth->query(['page' => 0, 'size' => 20]);
+// List users. query() returns Objectiveweb\DB\Collection.
+$users = $auth->query(['page' => 0, 'size' => 20]);
+
+foreach ($users as $user) {
+    // ...
+}
+
+$total = $users->total();
+$contentRange = $users->contentRange(); // e.g. "items 0-19/137"
 
 // Update user profile data
 $auth->update($userId, ['name' => 'Alice Updated']);
@@ -279,17 +286,19 @@ Register `Objectiveweb\Auth\Controller\UserController` at an application-owned
 prefix such as `/api/users`. It requires the `admin` role and supports:
 
 - searchable, filtered and paginated `GET /api/users` (`q`, `role`,
-  `status`, `page`, `size`, whitelisted `sort`);
+  `status`, `page`, `size`, whitelisted `sort`), returned directly as an
+  `Objectiveweb\DB\Collection`;
 - role and user detail reads;
 - create/invite and profile/role/managed-relation updates;
 - credential create, rename and delete;
 - suspend, activate, invitation and password-reset actions;
 - guarded deletion with relation cleanup.
 
-Management GET responses include a session CSRF token. Send it as
-`X-CSRF-Token` with `Content-Type: application/json` on every write. Setup and
-reset tokens are passed only to delivery callbacks and are never serialized in
-HTTP responses.
+User detail and role-list responses include a session CSRF token. Send it as
+`X-CSRF-Token` with `Content-Type: application/json` on every write. The user
+list itself is a plain `Collection`; use `total()` and `contentRange()` for
+pagination metadata. Setup and reset tokens are passed only to delivery
+callbacks and are never serialized in HTTP responses.
 
 Role names accepted by the management API must already exist in the configured
 roles table. Use migrations/seeds for role definitions.

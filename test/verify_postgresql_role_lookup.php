@@ -4,6 +4,7 @@ require_once dirname(__DIR__) . '/vendor/autoload.php';
 
 use Objectiveweb\Auth\DBAuth;
 use Objectiveweb\DB;
+use Objectiveweb\DB\Collection;
 
 $db = new DB(
     sprintf(
@@ -60,4 +61,29 @@ if ($auth->get_users_by_role('missing') !== []) {
     exit(1);
 }
 
-echo "PostgreSQL role lookup passed.\n";
+$users = $auth->query([
+    'page' => 0,
+    'size' => 1,
+    'sort' => 'name ASC',
+]);
+
+if (!$users instanceof Collection) {
+    fwrite(STDERR, "DBAuth query did not return a Collection\n");
+    exit(1);
+}
+if ($users->total() !== 2 || count($users) !== 1 || $users->contentRange() !== 'items 0-0/2') {
+    fwrite(STDERR, "Collection pagination metadata is incorrect\n");
+    exit(1);
+}
+
+$search = $auth->query([
+    'q' => 'viewer@example.com',
+    'size' => 10,
+]);
+
+if ($search->total() !== 1 || ($search[0]['credentials'][0]['uid'] ?? null) !== 'postgres-viewer@example.com') {
+    fwrite(STDERR, "Collection credential search failed\n");
+    exit(1);
+}
+
+echo "PostgreSQL role lookup and Collection query passed.\n";

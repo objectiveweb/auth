@@ -5,6 +5,7 @@ namespace Objectiveweb\Auth\Controller;
 use Objectiveweb\Auth;
 use Objectiveweb\Auth\Middleware\RequireRole;
 use Objectiveweb\Auth\UserException;
+use Objectiveweb\DB\Collection;
 use Objectiveweb\Router\Middleware;
 
 /**
@@ -37,12 +38,12 @@ class UserController
         ])));
     }
 
-    public function index(array $params = []): array
+    public function index(array $params = []): Collection
     {
         return $this->list($params);
     }
 
-    public function get(mixed $userOrParams = [], mixed $resource = null, array $params = []): array
+    public function get(mixed $userOrParams = [], mixed $resource = null, array $params = []): array|Collection
     {
         if (is_array($userOrParams)) {
             return $this->list($userOrParams);
@@ -119,7 +120,7 @@ class UserController
         return ['ok' => true];
     }
 
-    private function list(array $params): array
+    private function list(array $params): Collection
     {
         $allowed = ['q', 'role', 'status', 'page', 'size', 'sort'];
         foreach (array_keys($params) as $field) {
@@ -133,14 +134,8 @@ class UserController
         if (!in_array((string) ($params['status'] ?? ''), ['', 'active', 'suspended'], true)) {
             throw new UserException('Invalid status filter', 400);
         }
-        $result = $this->auth->query($params, 'AND');
-        $key = $this->auth->params['table'];
-        $result['_embedded'][$key] = array_map(
-            fn (array $user): array => $this->sanitizeUser($user),
-            $result['_embedded'][$key] ?? []
-        );
-        $result['_csrf'] = $this->auth->management_csrf_token();
-        return $result;
+
+        return $this->auth->query($params, 'AND');
     }
 
     private function detail(mixed $userId): array
