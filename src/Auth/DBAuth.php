@@ -436,20 +436,32 @@ class DBAuth extends \Objectiveweb\Auth
         }
 
         // DB::update() uses the configured table prefix and returns the
-        // affected row count. Once the first request clears the token, every
-        // competing request fails the token predicate without changing the
-        // new password.
-        $updated = $this->db->update(
-            (string) $this->params['table'],
-            $payload,
-            $where
-        );
+        // affected row count. A competing redemption/rotation cannot match the
+        // token predicate after the first request clears or replaces it.
+        //
+        // The expiry comparison above is not sufficient: the UPDATE may wait
+        // for a row lock until after the token expires. Recheck the clock after
+        // the write, while still in a transaction, so an expired redemption
+        // rolls back both the password change and token consumption.
+        return $this->db->transaction(function (DB $db) use (
+            $payload, $where, $user, $tokenExpiresField
+        ): array {
+            $updated = $db->update(
+                (string) $this->params['table'],
+                $payload,
+                $where
+            );
 
-        if ($updated !== 1) {
-            throw new UserException('Hash not found', 404);
-        }
+            if ($updated !== 1 || (
+                is_string($tokenExpiresField)
+                && $tokenExpiresField !== ''
+                && $user[$tokenExpiresField] <= date('Y-m-d H:i:s')
+            )) {
+                throw new UserException('Hash not found', 404);
+            }
 
-        return $this->sanitize_user($this->get($user[$this->params['id']]));
+            return $this->sanitize_user($this->get($user[$this->params['id']]));
+        });
     }
 
     public function update($user_id, array $data, $key = 'id')
