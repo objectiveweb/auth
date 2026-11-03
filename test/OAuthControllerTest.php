@@ -492,12 +492,13 @@ class OAuthControllerTest extends TestCase
     public function testExistingAccountLinkFailureDoesNotAuthenticateBrowser(): void
     {
         $auth = new class([], ['token' => 'token']) extends OAuthTrackingBasicAuth {
-            public function mark_credential_verified($userid, string $provider, string $uid): void
-            {
+            public function link_verified_credential(
+                int|string $userid, string $provider, string $uid, mixed $profile = null
+            ): void {
                 if ($provider === 'test') {
-                    throw new \RuntimeException('Simulated OAuth credential verification failure');
+                    throw new \RuntimeException('Simulated atomic OAuth link failure');
                 }
-                parent::mark_credential_verified($userid, $provider, $uid);
+                parent::link_verified_credential($userid, $provider, $uid, $profile);
             }
         };
         $auth->register('owner@example.com', 'local-secret');
@@ -514,13 +515,14 @@ class OAuthControllerTest extends TestCase
             ]);
             $this->fail('Expected OAuth credential verification to fail');
         } catch (\RuntimeException $e) {
-            $this->assertSame('Simulated OAuth credential verification failure', $e->getMessage());
+            $this->assertSame('Simulated atomic OAuth link failure', $e->getMessage());
         }
 
         $this->assertFalse($auth->check());
         $this->assertFalse($auth->sessionRegenerated);
         $this->assertArrayNotHasKey('ow_auth', $_SESSION);
         $this->assertArrayNotHasKey('oauth2pending', $_SESSION);
+        $this->assertFalse($auth->get_credential('test', 'pending-oauth-subject'));
     }
 
     public function testPendingAccountCannotBeCreatedWithoutExplicitChoice(): void

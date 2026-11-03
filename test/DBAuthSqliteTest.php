@@ -32,6 +32,38 @@ class DBAuthExpiryRaceDB extends DB
     }
 }
 
+/**
+ * Fail AFTER a successful SQL write to verify the surrounding transaction
+ * actually rolls it back (not just that the operation is skipped).
+ */
+class DBAuthAtomicLinkFailureDB extends DB
+{
+    public bool $failAfterCredentialInsert = false;
+    public bool $failAfterCredentialUpdate = false;
+
+    public function insert(string $table, array $data): ?string
+    {
+        $id = parent::insert($table, $data);
+        if ($table === 'user_credentials' && !empty($data['verified_at'])
+            && $this->failAfterCredentialInsert) {
+            $this->failAfterCredentialInsert = false;
+            throw new \RuntimeException('Simulated post-insert OAuth link failure');
+        }
+        return $id;
+    }
+
+    public function update(string $table, array $data, ?array $where = null): int
+    {
+        $updated = parent::update($table, $data, $where);
+        if ($table === 'user_credentials' && array_key_exists('verified_at', $data)
+            && $updated === 1 && $this->failAfterCredentialUpdate) {
+            $this->failAfterCredentialUpdate = false;
+            throw new \RuntimeException('Simulated post-update OAuth link failure');
+        }
+        return $updated;
+    }
+}
+
 class DBAuthSqliteTest extends TestCase
 {
     private static DB $db;
@@ -1889,6 +1921,203 @@ class DBAuthSqliteTest extends TestCase
         $this->assertArrayNotHasKey('oauth2pending', $_SESSION);
         $this->assertCount(1, self::$db->select('auth_user')->all());
         unset($_SERVER['REQUEST_METHOD'], $_SERVER['CONTENT_TYPE'], $_SERVER['HTTP_X_CSRF_TOKEN']);
+    }
+
+    public function testExistingAccountOAuthLinkRollsBackFailedInsertAndCanRetry(): void
+    {
+        [$db, $auth] = $this->oauthAtomicLinkFixture();
+        $owner = $auth->register('link-owner@example.com', 'secret');
+        $controller = $this->oauthAtomicLinkController($auth);
+        \League\OAuth2\Client\Provider\Test::$resourceOwner = new class {
+            public function getId(): string { return 'link-subject'; }
+            public function toArray(): array { return ['name' => 'OAuth Link Profile']; }
+        };
+
+        $originalServer = $_SERVER;
+        try {
+            $controller->get('test', []);
+            $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+            $_SERVER['REQUEST_METHOD'] = 'POST';
+            $_SERVER['CONTENT_TYPE'] = 'application/json';
+            $_SERVER['HTTP_X_CSRF_TOKEN'] = $controller->getPendingAccount()['_csrf'];
+
+            // SQL INSERT succeeds and then the injected exception fires.
+            // Rollback must remove that row while preserving the local user.
+            $db->failAfterCredentialInsert = true;
+            try {
+                $controller->postExistingAccount([
+                    'uid' => 'link-owner@example.com',
+                    'password' => 'secret',
+                ]);
+                $this->fail('A partially committed OAuth identity was accepted');
+            } catch (\RuntimeException $exception) {
+                $this->assertSame('Simulated post-insert OAuth link failure', $exception->getMessage());
+            }
+            $this->assertSame(1, $db->count('user', []));
+            $this->assertSame(1, $db->count('user_credentials', []));
+            $this->assertFalse($auth->get_credential('test', 'link-subject'));
+            $this->assertFalse($auth->check());
+            $this->assertArrayNotHasKey('oauth2pending', $_SESSION);
+
+            // A fresh provider authorization can now retry the link.
+            $controller->get('test', []);
+            $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+            $_SERVER['HTTP_X_CSRF_TOKEN'] = $controller->getPendingAccount()['_csrf'];
+            $linked = $controller->postExistingAccount([
+                'uid' => 'link-owner@example.com',
+                'password' => 'secret',
+            ]);
+
+            $this->assertSame('linked', $linked['status']);
+            $this->assertSame($owner['id'], $linked['user']['id']);
+            $this->assertSame(2, $db->count('user_credentials', []));
+            $credential = $auth->get_credential('test', 'link-subject');
+            $this->assertSame($owner['id'], $credential['user_id']);
+            $this->assertNotEmpty($credential['verified_at']);
+            $this->assertSame(['name' => 'OAuth Link Profile'], $credential['profile']);
+            $this->assertTrue($auth->check());
+        } finally {
+            $_SERVER = $originalServer;
+        }
+    }
+
+    public function testExplicitOAuthLinkRollsBackUpdateAndCanRetry(): void
+    {
+        [$db, $auth] = $this->oauthAtomicLinkFixture();
+        $owner = $auth->register('explicit-owner@example.com', 'secret');
+        $auth->create_credential($owner['id'], 'test', 'existing-subject', ['before' => 'oauth']);
+        $db->update('user_credentials', [
+            'token' => hash('sha256', 'pending-verification-secret'),
+            'token_expires_at' => '2030-01-01 00:00:00',
+        ], ['provider' => 'test', 'uid' => 'existing-subject']);
+        $before = $auth->get_credential('test', 'existing-subject');
+        $auth->login('explicit-owner@example.com', 'secret');
+
+        $controller = $this->oauthAtomicLinkController($auth);
+        \League\OAuth2\Client\Provider\Test::$resourceOwner = new class {
+            public function getId(): string { return 'existing-subject'; }
+            public function toArray(): array { return ['name' => 'Updated OAuth Profile']; }
+        };
+        $originalServer = $_SERVER;
+        try {
+            $_SERVER['REQUEST_METHOD'] = 'POST';
+            $_SERVER['CONTENT_TYPE'] = 'application/json';
+            $_SERVER['HTTP_X_CSRF_TOKEN'] = $auth->management_csrf_token();
+            $controller->postLink('test');
+
+            // The conditional UPDATE succeeds, but an exception immediately
+            // afterwards must restore both verification and profile metadata.
+            $db->failAfterCredentialUpdate = true;
+            try {
+                $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+                $this->fail('An incomplete OAuth verification was committed');
+            } catch (\RuntimeException $exception) {
+                $this->assertSame('Simulated post-update OAuth link failure', $exception->getMessage());
+            }
+
+            $this->assertSame($before, $auth->get_credential('test', 'existing-subject'));
+            $this->assertTrue($auth->check());
+            $this->assertSame($owner['id'], $auth->user()['id']);
+            $this->assertArrayNotHasKey('test', $_SESSION['oauth2flows']);
+
+            // Retry with a fresh link flow, restoring verification and
+            // consuming any outstanding credential token atomically.
+            $controller->postLink('test');
+            $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+            $linked = $auth->get_credential('test', 'existing-subject');
+            $this->assertNotEmpty($linked['verified_at']);
+            $this->assertNull($linked['token']);
+            $this->assertNull($linked['token_expires_at']);
+            $this->assertSame(['name' => 'Updated OAuth Profile'], $linked['profile']);
+            $this->assertSame($owner['id'], $auth->user()['id']);
+            $this->assertSame(2, $db->count('user_credentials', []));
+        } finally {
+            $_SERVER = $originalServer;
+        }
+    }
+
+    public function testAtomicOAuthLinkDoesNotClaimAnotherUsersCredential(): void
+    {
+        [$db, $auth] = $this->oauthAtomicLinkFixture();
+        $owner = $auth->register('original-owner@example.com', 'secret');
+        $other = $auth->register('other-owner@example.com', 'secret');
+        $auth->link_verified_credential($owner['id'], 'test', 'owned-subject', ['source' => 'owner']);
+        $before = $auth->get_credential('test', 'owned-subject');
+
+        try {
+            $auth->link_verified_credential($other['id'], 'test', 'owned-subject', ['source' => 'other']);
+            $this->fail('A verified OAuth identity was reassigned to another user');
+        } catch (UserException $exception) {
+            $this->assertSame(409, $exception->getCode());
+        }
+
+        $this->assertSame($before, $auth->get_credential('test', 'owned-subject'));
+        $this->assertSame(3, $db->count('user_credentials', []));
+
+        // Linking the same independently proven identity to its existing
+        // owner is safe and does not create a duplicate credential.
+        $auth->link_verified_credential($owner['id'], 'test', 'owned-subject', ['source' => 'owner']);
+        $this->assertSame(3, $db->count('user_credentials', []));
+        $this->assertSame($owner['id'], $auth->get_credential('test', 'owned-subject')['user_id']);
+    }
+
+    /** @return array{DBAuthAtomicLinkFailureDB,DBAuth} */
+    private function oauthAtomicLinkFixture(): array
+    {
+        require_once __DIR__ . '/OAuthTestProvider.php';
+        \League\OAuth2\Client\Provider\Test::$state = 'test-oauth-state';
+
+        $db = new DBAuthAtomicLinkFailureDB('sqlite::memory:');
+        $db->query(
+            'CREATE TABLE user (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                uuid TEXT NOT NULL UNIQUE,
+                name TEXT,
+                image TEXT,
+                created TEXT,
+                password TEXT,
+                token TEXT,
+                token_expires_at TEXT,
+                disabled_at TEXT
+            )'
+        )->exec();
+        $db->query(
+            'CREATE TABLE user_credentials (
+                uid TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                user_id INTEGER NOT NULL,
+                profile TEXT,
+                token TEXT,
+                token_expires_at TEXT,
+                verified_at TEXT,
+                last_login TEXT,
+                created TEXT,
+                PRIMARY KEY(uid, provider)
+            )'
+        )->exec();
+
+        return [$db, new DBAuth($db, [
+            'token' => 'token',
+            'disabled_at' => 'disabled_at',
+            'roles_table' => null,
+            'user_roles_table' => null,
+        ])];
+    }
+
+    private function oauthAtomicLinkController(DBAuth $auth): \Objectiveweb\Auth\Controller\OAuthController
+    {
+        return new class($auth, [
+            'test' => [
+                'clientId' => 'test-client',
+                'clientSecret' => 'test-secret',
+                'redirectUri' => 'https://example.test/oauth/test',
+            ],
+        ]) extends \Objectiveweb\Auth\Controller\OAuthController {
+            protected function redirect(string $location): void
+            {
+                // OAuth callbacks must not exit PHPUnit.
+            }
+        };
     }
 
 }
