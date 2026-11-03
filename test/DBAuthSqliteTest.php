@@ -32,6 +32,38 @@ class DBAuthExpiryRaceDB extends DB
     }
 }
 
+/**
+ * Fail AFTER a successful SQL write to verify the surrounding transaction
+ * actually rolls it back (not just that the operation is skipped).
+ */
+class DBAuthAtomicLinkFailureDB extends DB
+{
+    public bool $failAfterCredentialInsert = false;
+    public bool $failAfterCredentialUpdate = false;
+
+    public function insert(string $table, array $data): ?string
+    {
+        $id = parent::insert($table, $data);
+        if ($table === 'user_credentials' && !empty($data['verified_at'])
+            && $this->failAfterCredentialInsert) {
+            $this->failAfterCredentialInsert = false;
+            throw new \RuntimeException('Simulated post-insert OAuth link failure');
+        }
+        return $id;
+    }
+
+    public function update(string $table, array $data, ?array $where = null): int
+    {
+        $updated = parent::update($table, $data, $where);
+        if ($table === 'user_credentials' && array_key_exists('verified_at', $data)
+            && $updated === 1 && $this->failAfterCredentialUpdate) {
+            $this->failAfterCredentialUpdate = false;
+            throw new \RuntimeException('Simulated post-update OAuth link failure');
+        }
+        return $updated;
+    }
+}
+
 class DBAuthSqliteTest extends TestCase
 {
     private static DB $db;
