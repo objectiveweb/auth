@@ -640,74 +640,66 @@ class DBAuth extends \Objectiveweb\Auth
         $userRolesTable = (string) $this->params['user_roles_table'];
         $userRolesUserId = (string) $this->params['user_roles_user_id'];
         $userRolesRoleId = (string) $this->params['user_roles_role_id'];
-        $roleId = (string) $this->params['role_id'];
+        $roleIdField = (string) $this->params['role_id'];
         $roleNameField = (string) $this->params['role_name'];
 
-        $safeFields = ['name', 'image', $userIdField];
+        $role = $this->db->select(
+            $rolesTable,
+            [$roleNameField => $roleName],
+            ['limit' => 1]
+        )->fetch();
+        if (!$role || !array_key_exists($roleIdField, $role)) {
+            return [];
+        }
 
-        foreach (['uuid', 'created', 'last_login', 'token_expires_field'] as $paramKey) {
+        $memberships = $this->db->select(
+            $userRolesTable,
+            [$userRolesRoleId => $role[$roleIdField]],
+            [
+                'fields' => [$userRolesUserId],
+                'order' => $userRolesUserId,
+            ]
+        )->all();
+
+        $safeFields = ['name', 'image', $userIdField];
+        foreach (['uuid', 'created', 'last_login', 'disabled_at', 'token_expires_field'] as $paramKey) {
             $field = $this->params[$paramKey] ?? null;
             if (is_string($field) && $field !== '' && !in_array($field, $safeFields, true)) {
                 $safeFields[] = $field;
             }
         }
 
-        $selectFields = array_map(
-            fn (string $field): string => $userTable . '.' . $field,
-            $safeFields
-        );
-        $selectFields['roles_csv'] = 'GROUP_CONCAT(DISTINCT r_all.' . $roleNameField . ')';
+        $result = [];
+        $seen = [];
+        foreach ($memberships as $membership) {
+            $userId = $membership[$userRolesUserId] ?? null;
+            if ($userId === null) {
+                continue;
+            }
 
-        $rows = $this->db->select(
-            $userTable,
-            ['r_filter.' . $roleNameField => $roleName],
-            [
-                'fields' => $selectFields,
-                'join' => [
-                    [
-                        'type' => 'inner',
-                        'table' => $userRolesTable,
-                        'alias' => 'ur_filter',
-                        'on' => 'ur_filter.' . $userRolesUserId . ' = ' . $userTable . '.' . $userIdField,
-                    ],
-                    [
-                        'type' => 'inner',
-                        'table' => $rolesTable,
-                        'alias' => 'r_filter',
-                        'on' => 'r_filter.' . $roleId . ' = ur_filter.' . $userRolesRoleId,
-                    ],
-                    [
-                        'type' => 'left',
-                        'table' => $userRolesTable,
-                        'alias' => 'ur_all',
-                        'on' => 'ur_all.' . $userRolesUserId . ' = ' . $userTable . '.' . $userIdField,
-                    ],
-                    [
-                        'type' => 'left',
-                        'table' => $rolesTable,
-                        'alias' => 'r_all',
-                        'on' => 'r_all.' . $roleId . ' = ur_all.' . $userRolesRoleId,
-                    ],
-                ],
-                'group' => array_map(
-                    fn (string $field): string => $userTable . '.' . $field,
-                    $safeFields
-                ),
-                'order' => $userTable . '.' . $userIdField,
-            ]
-        )->all();
+            $identity = (string) $userId;
+            if (isset($seen[$identity])) {
+                continue;
+            }
+            $seen[$identity] = true;
 
-        return array_values(array_map(function (array $row): array {
-            $rolesCsv = (string) ($row['roles_csv'] ?? '');
-            unset($row['roles_csv']);
+            $user = $this->db->select(
+                $userTable,
+                [$userIdField => $userId],
+                [
+                    'fields' => $safeFields,
+                    'limit' => 1,
+                ]
+            )->fetch();
+            if (!$user) {
+                continue;
+            }
 
-            $roleField = (string) $this->params['roles'];
-            $roles = $rolesCsv === '' ? [] : array_values(array_unique(array_filter(explode(',', $rolesCsv), fn (string $v): bool => $v !== '')));
-            sort($roles, SORT_STRING);
-            $row[$roleField] = $roles;
+            $user[$this->params['roles']] = $this->loadUserRoles($userId);
+            $result[] = $this->sanitize_user($user);
+        }
 
-            return $row;
-        }, $rows));
+        return $result;
     }
 
     public function get_roles(): array
@@ -992,14 +984,18 @@ class DBAuth extends \Objectiveweb\Auth
             }
 
             $eagerTable = $relation['table'] ?? null;
+            $subjectKey = $relation['subject_key'] ?? null;
             $eagerKey = $relation['target_key'] ?? null;
-            if (!is_string($eagerTable) || !is_string($eagerKey)) {
+            if (!is_string($eagerTable) || !is_string($subjectKey) || !is_string($eagerKey)) {
                 throw new \InvalidArgumentException("Invalid relation table/key config for relation `$relationName`");
             }
 
             $row[(string) $relationName] = $this->db->select(
                 $eagerTable,
-                [$eagerKey => $targetIds],
+                [
+                    $subjectKey => $subjectId,
+                    $eagerKey => $targetIds,
+                ],
                 $eagerParams
             )->all();
         }
