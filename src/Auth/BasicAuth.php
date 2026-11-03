@@ -458,6 +458,46 @@ class BasicAuth extends \Objectiveweb\Auth
         return true;
     }
 
+    public function link_verified_credential(
+        int|string $userid,
+        string $provider,
+        string $uid,
+        mixed $profile = null
+    ): void {
+        if (trim($provider) === '' || trim($uid) === '' || $provider === 'local') {
+            throw new UserException('An external provider and uid are required', 400);
+        }
+        $user = $this->get($userid);
+        if (!$this->is_active($user)) {
+            throw new UserException('Account suspended', 403);
+        }
+        $existing = $this->get_credential($provider, $uid);
+        if ($existing && (string) $existing['user_id'] !== (string) $userid) {
+            throw new UserException('Credential already registered', 409);
+        }
+
+        // Compute the entire record before replacing the in-memory credential.
+        // No intermediate unverified identity is observable or left behind.
+        $now = date('Y-m-d H:i:s');
+        $credential = array_merge([
+            'user_id' => $userid,
+            'provider' => $provider,
+            'uid' => $uid,
+            'profile' => null,
+            'created' => $now,
+            'verified_at' => null,
+        ], $existing ?: [], [
+            'verified_at' => ($existing['verified_at'] ?? null) ?: $now,
+            'last_login' => $now,
+            'token' => null,
+            'token_expires_at' => null,
+        ]);
+        if ($profile !== null) {
+            $credential['profile'] = is_array($profile) ? json_encode($profile) : $profile;
+        }
+        $this->credentials[$provider][$uid] = $credential;
+    }
+
     public function issue_credential_token($userid, string $provider, string $uid): string
     {
         if (!in_array($provider, (array) $this->params['credential_token_providers'], true)) {

@@ -527,6 +527,24 @@ abstract class Auth
      */
     abstract public function update_credential($userid, $provider, $uid, $profile = null);
 
+    /**
+     * Trusted OAuth integration hook, called only after successful provider
+     * proof and explicit user consent. Atomically create/upgrade a credential
+     * already owned by this user and mark it verified. Never claim a credential
+     * already owned by another account or leave a partial unverified identity.
+     *
+     * Custom providers must implement this atomically to support OAuth linking.
+     * This is NOT an unauthenticated credential-management endpoint.
+     */
+    public function link_verified_credential(
+        int|string $userid,
+        string $provider,
+        string $uid,
+        mixed $profile = null
+    ): void {
+        throw new \LogicException('Atomic verified-credential linking is not supported by this provider');
+    }
+
     abstract public function create_credential($userid, string $provider, string $uid, mixed $profile = null): array;
 
     abstract public function rename_credential(
