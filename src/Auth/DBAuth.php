@@ -84,7 +84,7 @@ class DBAuth extends \Objectiveweb\Auth
             }
 
             $hydrated['credentials'] = $credentials;
-            $data[] = $hydrated;
+            $data[] = $this->sanitize_user($hydrated);
         }
 
         [$sortField, $sortDirection] = array_pad(preg_split('/\s+/', trim($sort), 2), 2, 'ASC');
@@ -139,7 +139,7 @@ class DBAuth extends \Objectiveweb\Auth
         $credential = $this->get_credential($provider, $uid);
         if (!empty($credential)) {
             $ex = new UserException('Credential already registered', 409);
-            $ex->setUser($this->get($credential['user_id']));
+            $ex->setUser($this->sanitize_user($this->get($credential['user_id'])));
             throw $ex;
         }
 
@@ -213,7 +213,7 @@ class DBAuth extends \Objectiveweb\Auth
                 $this->syncUserRoles($userId, $roles);
             }
 
-            return $this->get($userId);
+            return $this->sanitize_user($this->get($userId));
         });
     }
 
@@ -263,7 +263,7 @@ class DBAuth extends \Objectiveweb\Auth
             throw new UserException('Hash not found', 404);
         }
 
-        return $this->get($user[$this->params['id']]);
+        return $this->sanitize_user($this->get($user[$this->params['id']]));
     }
 
     public function update($user_id, array $data, $key = 'id')
