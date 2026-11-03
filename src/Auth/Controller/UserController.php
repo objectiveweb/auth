@@ -142,7 +142,6 @@ class UserController
     {
         $user = $this->sanitizeUser($this->auth->get($userId));
         $user['credentials'] = $this->auth->get_credentials($userId);
-        $user['managed_relations'] = $this->auth->get_managed_relations($userId);
         $user['status'] = $this->auth->is_active($user) ? 'active' : 'suspended';
         $user['_csrf'] = $this->auth->management_csrf_token();
         return $user;
@@ -154,8 +153,8 @@ class UserController
         if ($uid === '') {
             throw new UserException('Missing uid', 400);
         }
-        $relations = $data['managed_relations'] ?? [];
-        unset($data['managed_relations'], $data['uid']);
+        $this->assertNoApplicationRelations($data);
+        unset($data['uid']);
         $passwordField = $this->auth->params['password'];
         $password = $data[$passwordField] ?? null;
         unset($data[$passwordField]);
@@ -168,9 +167,6 @@ class UserController
 
         $user = $this->auth->register($uid, is_string($password) && $password !== '' ? $password : null, $data);
         $id = $user[$this->auth->params['id']];
-        if (is_array($relations) && $relations !== []) {
-            $this->auth->sync_managed_relations($id, $relations);
-        }
         if (!is_string($password) || $password === '') {
             $this->auth->invite($id);
         }
@@ -184,9 +180,8 @@ class UserController
     private function updateUser(mixed $userId, array $data): array
     {
         $target = $this->auth->get($userId);
-        $relationsPresent = array_key_exists('managed_relations', $data);
-        $relations = $data['managed_relations'] ?? [];
-        unset($data['managed_relations'], $data['uid'], $data[$this->auth->params['password']]);
+        $this->assertNoApplicationRelations($data);
+        unset($data['uid'], $data[$this->auth->params['password']]);
         $this->assertWriteFields($data);
 
         $roleField = $this->auth->params['roles'];
@@ -201,12 +196,6 @@ class UserController
         }
 
         $this->auth->update($userId, $data);
-        if ($relationsPresent) {
-            if (!is_array($relations)) {
-                throw new UserException('Invalid managed relations', 400);
-            }
-            $this->auth->sync_managed_relations($userId, $relations);
-        }
         $this->auth->audit('user.updated', $userId, ['fields' => array_keys($data)]);
         return $this->detail($userId);
     }
@@ -256,6 +245,16 @@ class UserController
         $this->auth->invite($userId, $reset);
         $this->auth->audit($reset ? 'password.reset_requested' : 'invitation.sent', $userId);
         return ['ok' => true];
+    }
+
+    private function assertNoApplicationRelations(array $data): void
+    {
+        if (array_key_exists('managed_relations', $data)) {
+            throw new UserException(
+                'Application relations must be managed by the application',
+                400
+            );
+        }
     }
 
     private function assertManagementWrite(): void

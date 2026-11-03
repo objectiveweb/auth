@@ -471,36 +471,6 @@ class BasicAuth extends \Objectiveweb\Auth
         return true;
     }
 
-    public function get_managed_relations($userId): array
-    {
-        $this->get($userId);
-        $result = [];
-        foreach ((array) $this->params['managed_relations'] as $name => $_config) {
-            $values = $this->users[$userId]['_managed_relations'][$name] ?? [];
-            $result[$name] = array_values($values);
-        }
-        return $result;
-    }
-
-    public function sync_managed_relations($userId, array $relations): array
-    {
-        $this->get($userId);
-        foreach ($relations as $name => $values) {
-            $relation = $this->params['managed_relations'][$name] ?? null;
-            if (!is_array($relation) || !is_array($values)) {
-                throw new UserException("Invalid managed relation `$name`", 400);
-            }
-
-            $values = array_values(array_unique($values));
-            if (is_callable($relation['validate_callback'] ?? null)) {
-                call_user_func($relation['validate_callback'], $values);
-            }
-
-            $this->users[$userId]['_managed_relations'][$name] = $values;
-        }
-        return $this->get_managed_relations($userId);
-    }
-
     private function nextId(): int
     {
         if (empty($this->users)) {
@@ -563,7 +533,6 @@ class BasicAuth extends \Objectiveweb\Auth
 
     private function publicUser(array $user): array
     {
-        unset($user['_managed_relations']);
         return $this->sanitize_user($user);
     }
 

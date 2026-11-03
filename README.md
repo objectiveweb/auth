@@ -78,7 +78,8 @@ These options come from both the shared `Auth` contract and `DBAuth`. Set only t
 | `roles_table` / `user_roles_table` | `role` / `user_roles` | Global roles and memberships; both required or both `null` |
 | `role_id` / `role_name` | `id` / `name` | Role table's ID/name fields |
 | `user_roles_user_id` / `user_roles_role_id` | `user_id` / `role_id` | Membership foreign-key fields |
-| `relations` / `managed_relations` | `[]` / `[]` | Resource abilities/delegations and admin-managed memberships; see Relations |
+| `relations` | `[]` | Resource abilities and user-to-user delegations; see Relations |
+| `user_context_callback` | `null` | Application callback `(sanitizedUser): array` to populate the authenticated session's `context` |
 | `session_key` | `ow_auth` | Authenticated principal's session key |
 | `register_scope` / `register_allow_grants` | `Auth::ANONYMOUS` / `false` | Registration access and whether callers may supply roles |
 | `management_csrf` / `management_csrf_session_key` | `true` / `ow_auth_management_csrf` | Management write protection and CSRF session key |
@@ -292,27 +293,37 @@ $itemIds = $auth->user_can('manage', 'item'); // Accessible item IDs
 
 Each permission relation requires `table`, `subject_key`, `target_key` and either `ability_key` or `role_key` together with `role_abilities` (a role-to-ability map). `eager` may be `true` or a `DB::select()` options array such as `['order' => 'item_id DESC']`. Eager relation rows remain scoped to the current subject user.
 
-`managed_relations` is different: these are **application-owned many-to-many associations** that admins can synchronize, not grants interpreted by `user_can()` unless separately mapped as a permission relation.
+#### Application-owned user context
+
+Use `user_context_callback` for application authorization context that must be available on the authenticated principal (for example, the venue IDs assigned to the current user). It receives a **sanitized** user and must return an array. Auth stores that array under `$auth->user()['context']` at login (including OAuth) and **rebuilds** it from the latest user record whenever `reload()` or `revalidate()` is called.
+
+The application owns the underlying relationships, validation, and writes. Auth does not read or modify the application association table itself:
 
 ```php
+use Breakfastweekend\App\Service\UserService;
+
 $auth = new DBAuth($db, [
-    'managed_relations' => [
-        'venues' => [
-            'table' => 'venue_users', // Application-owned
-            'subject_key' => 'user_id',
-            'target_key' => 'venue_id',
-            'validate_callback' => function (array $ids): void {
-                // Validate IDs; throw if any requested association is invalid.
-            },
-        ],
-    ],
+    'user_context_callback' => function (array $user) use ($app): array {
+        $service = $app->create(UserService::class);
+        return [
+            'venues' => $service->getVenueIds($user['id']),
+        ];
+    },
 ]);
 
-$auth->sync_managed_relations($userId, ['venues' => [12, 34]]);
-$assigned = $auth->get_managed_relations($userId); // ['venues' => [12, 34]]
+$auth->login('alice@example.com', 'secret');
+$venueIds = $auth->user()['context']['venues']; // e.g. [12, 34]
+
+// Once the application updates venue assignments, refresh session context:
+$auth->revalidate();
+$venueIds = $auth->user()['context']['venues'];
 ```
 
-`sync_managed_relations()` validates the incoming values, then replaces the selected memberships transactionally. When enabling relations, configure them in the **same** DBAuth constructor as the basic settings; the isolated constructors above illustrate the relevant parameters, not multiple concurrent auth instances.
+`getVenueIds()` is an **application method to implement**; it is not supplied by Auth. Keep the existing application's `validateVenueIds()` in its own service, alongside an application-owned assignment method such as `syncVenueIds($userId, $ids)`. The latter should validate IDs and authorization before changing `venue_users` transactionally. For users whose assignments change in another session, call `revalidate()` on the next protected request or otherwise invalidate/refresh that session according to your application's needs.
+
+Session context is not implicitly added to `get()` or `query()` results; those remain user-record APIs. `AuthController::index()` returns the authenticated session principal, including its context. If the callback is omitted, Auth does not add a context field.
+
+**Migration from `managed_relations` (breaking change for 0.2.0):** remove that parameter; move `get_managed_relations()` and `sync_managed_relations()` callers into your application's user service; expose venue assignments through application-specific endpoints rather than generic `UserController` create/update. The generic Auth controller now rejects `managed_relations` request fields instead of silently losing assignments, and it no longer includes them in user-detail responses. `DBAuth::delete()` no longer cleans application association tables: arrange cleanup using application transactions/foreign-key cascades and, where necessary, `deletion_guard_callback`.
 
 ### `BasicAuth`
 
@@ -406,7 +417,7 @@ prefix such as `/api/users`. It requires the `admin` role and supports:
   `status`, `page`, `size`, whitelisted `sort`), returned directly as an
   `Objectiveweb\DB\Collection`;
 - role and user detail reads;
-- create/invite and profile/role/managed-relation updates;
+- create/invite and profile/global-role updates;
 - credential create, rename and delete;
 - suspend, activate, invitation and password-reset actions;
 - guarded deletion with relation cleanup.
@@ -418,7 +429,9 @@ pagination metadata. Setup and reset tokens are passed only to delivery
 callbacks and are never serialized in HTTP responses.
 
 Role names accepted by the management API must already exist in the configured
-roles table. Use migrations/seeds for role definitions.
+roles table. Use migrations/seeds for role definitions. Application-owned assignments
+(e.g. venues) belong in application-specific endpoints; `managed_relations` is not
+accepted by the generic management API.
 
 ## Controllers and middleware
 
