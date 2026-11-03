@@ -75,3 +75,9 @@ jobs:
 
       - name: Verify migration status
         run: vendor/bin/phinx status --configuration test/phinx.php --environment testing
+
+      - name: Verify migrated schema
+        run: php test/verify_migrations.php
+
+      - name: Verify portable role lookup
+        run: php test/verify_postgresql_role_lookup.php
