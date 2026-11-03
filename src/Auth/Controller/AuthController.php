@@ -112,6 +112,14 @@ class AuthController
     {
         $this->assertCanRegister();
 
+        // Authenticated or role-restricted registration is a privileged write.
+        // Anonymous registration stays compatible with ordinary HTML forms.
+        if ($this->auth->check()) {
+            $this->assertRegistrationCsrf($user);
+        }
+        // Transport metadata must never be stored as a user profile field.
+        unset($user['_csrf']);
+
         $uid = trim((string) ($user['uid'] ?? ''));
         if ($uid === '') {
             throw new UserException('Missing uid', 400);
@@ -280,7 +288,36 @@ class AuthController
             }
         }
 
-        $provided = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? null;
+        $this->assertCsrfToken($_SERVER['HTTP_X_CSRF_TOKEN'] ?? null);
+    }
+
+    /**
+     * Protect authenticated registration without requiring JavaScript.
+     * Accept JSON APIs and regular HTML forms; either the X-CSRF-Token header
+     * or a hidden _csrf field must match the current session token.
+     */
+    private function assertRegistrationCsrf(array $form): void
+    {
+        if (!empty($_SERVER['REQUEST_METHOD'])) {
+            if (strtoupper((string) $_SERVER['REQUEST_METHOD']) !== 'POST') {
+                throw new UserException('POST is required', 405);
+            }
+
+            $contentType = strtolower(trim(explode(';', (string) ($_SERVER['CONTENT_TYPE'] ?? ''), 2)[0]));
+            if (!in_array($contentType, [
+                'application/json',
+                'application/x-www-form-urlencoded',
+                'multipart/form-data',
+            ], true)) {
+                throw new UserException('Unsupported registration Content-Type', 415);
+            }
+        }
+
+        $this->assertCsrfToken($_SERVER['HTTP_X_CSRF_TOKEN'] ?? ($form['_csrf'] ?? null));
+    }
+
+    private function assertCsrfToken(mixed $provided): void
+    {
         $expected = $this->auth->management_csrf_token();
         if (!is_string($provided) || $provided === '' || !hash_equals($expected, $provided)) {
             throw new UserException('Invalid CSRF token', 403);

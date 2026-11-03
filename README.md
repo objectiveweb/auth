@@ -227,6 +227,28 @@ complete email verification before treating an email as verified. Explicit
 provider registration using `DBAuth::register()` is reserved for trusted
 application code after authenticating the provider's identity.
 
+Authenticated and role-restricted registration requires a session CSRF token
+from `AuthController::index()` (`_csrf`) or from the server-side
+`$auth->management_csrf_token()`. Supply it as the `X-CSRF-Token` header
+or a hidden form field named `_csrf`. JSON, URL-encoded forms and multipart
+forms are supported; the token field is stripped before account creation.
+Anonymous registration does not require CSRF.
+
+A traditional form can be rendered on the server without JavaScript:
+
+```html
+<form method="post" action="/auth/register">
+  <input type="hidden" name="_csrf" value="<?= htmlspecialchars($auth->management_csrf_token(), ENT_QUOTES, 'UTF-8') ?>">
+  <input type="email" name="uid" required>
+  <input type="password" name="password" required>
+  <input type="text" name="name">
+  <button type="submit">Register</button>
+</form>
+```
+
+The consuming application renders the form and handles redirects after
+registration; the library returns a response rather than an HTML page.
+
 **OAuth subject matching:** The bundled MySQL 8 migration uses the case-sensitive, `NO PAD` `utf8mb4_0900_bin` collation for both `user_credentials.uid` and `provider`. OAuth subject IDs must match exactly, including case and trailing spaces. Custom schemas must enforce equivalent identity semantics. Editing this migration does **not** update tables already created by Phinx; if you've previously run it, migrate or recreate the credential table before deploying.
 
 #### Users
