@@ -29,6 +29,7 @@ class AuthController
         if ($this->auth->check()) {
             $user = $this->auth->user();
             $user['credentials'] = $this->auth->get_credentials($user[$this->auth->params['id']]);
+            $user['_csrf'] = $this->auth->management_csrf_token();
             return $user;
         }
 
@@ -131,17 +132,28 @@ class AuthController
     #[Middleware(RequireRole::class, Auth::ALL)]
     function postPassword(array $form)
     {
-        // if user is logged in, update password
+        // The authenticated path is not a password-reset endpoint. Require
+        // session-bound CSRF and proof of the account's current password.
         if ($this->auth->check()) {
-            // TODO validar senha anterior
-            $confirm = $form['confirm'] ?? null;
-            if (empty($form['password']) || $form['password'] != $confirm) {
-                throw new UserException('Passwords dont match', 400);
+            $this->assertPasswordChangeCsrf();
+
+            $currentPassword = $form['current_password'] ?? null;
+            if (!is_string($currentPassword) || $currentPassword === '') {
+                throw new UserException('Current password is required', 400);
+            }
+
+            $password = $form['password'] ?? null;
+            if (!is_string($password) || $password === '' || $password !== ($form['confirm'] ?? null)) {
+                throw new UserException('Passwords don\'t match', 400);
             }
 
             $user = $this->auth->user();
+            $userId = $user[$this->auth->params['id']];
+            if (!$this->auth->verify_password($userId, $currentPassword)) {
+                throw new AuthException('Invalid current password', 403);
+            }
 
-            return $this->auth->passwd($user[$this->auth->params['id']], $form['password']);
+            return $this->auth->passwd($userId, $password);
         } // Forgot password
         else {
             if (empty($form['uid'])) {
@@ -157,26 +169,57 @@ class AuthController
 
             foreach ($providers as $provider) {
                 $candidate = $this->auth->get_credential($provider, $form['uid']);
-                if (empty($candidate['user_id'])) {
-                    continue;
+                if ($credential === false && !empty($candidate['user_id'])) {
+                    $credential = $candidate;
                 }
-
-                $credential = $candidate;
-                break;
             }
 
             if (!empty($credential['user_id'])) {
-                // return new token
                 $credential['token'] = $this->auth->update_token($credential['user_id']);
 
                 if (is_callable($this->auth->params['token_callback'])) {
-                    return call_user_func($this->auth->params['token_callback'], $credential);
-                } else {
-                    return [];
+                    try {
+                        call_user_func($this->auth->params['token_callback'], $credential);
+                    } catch (\Throwable $exception) {
+                        error_log(
+                            'Password recovery delivery failed: '
+                            . $exception::class
+                            . ': '
+                            . $exception->getMessage()
+                        );
+                    }
                 }
-            } else {
-                throw new UserException('Credential not found', 404);
             }
+
+            // Anonymous recovery requests deliberately return the same payload
+            // whether or not a credential exists. This prevents account
+            // enumeration through status codes or callback return values.
+            return [];
+        }
+    }
+
+    /**
+     * Changing an authenticated password is a session-authenticated write.
+     * Always require the session token, even for direct controller calls.
+     * HTTP clients must also submit JSON to avoid simple cross-origin forms.
+     */
+    private function assertPasswordChangeCsrf(): void
+    {
+        if (!empty($_SERVER['REQUEST_METHOD'])) {
+            if (strtoupper((string) $_SERVER['REQUEST_METHOD']) !== 'POST') {
+                throw new UserException('POST is required', 405);
+            }
+
+            $contentType = strtolower(trim(explode(';', (string) ($_SERVER['CONTENT_TYPE'] ?? ''), 2)[0]));
+            if ($contentType !== 'application/json') {
+                throw new UserException('Content-Type application/json is required', 415);
+            }
+        }
+
+        $provided = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? null;
+        $expected = $this->auth->management_csrf_token();
+        if (!is_string($provided) || $provided === '' || !hash_equals($expected, $provided)) {
+            throw new UserException('Invalid CSRF token', 403);
         }
     }
 
