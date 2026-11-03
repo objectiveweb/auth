@@ -129,6 +129,82 @@ class UserControllerTest extends TestCase
         $this->assertGreaterThan(0, (int) $user['id']);
     }
 
+    public function testAdminInvitationRequiresDeliveryAndDoesNotInsertUser(): void
+    {
+        foreach (['token-disabled', 'no-callback'] as $case) {
+            $auth = new DBAuth(self::$db, [
+                'table' => 'auth_user',
+                'credentials_table' => 'auth_credentials',
+                'created' => 'created',
+                'credentials_created' => null,
+                'roles_table' => null,
+                'user_roles_table' => null,
+                'token' => $case === 'token-disabled' ? null : 'token',
+                'invitation_callback' => $case === 'token-disabled'
+                    ? static function (): void {} : null,
+            ]);
+            try {
+                (new UserController($auth))->post(['uid' => $case . '@example.com']);
+                $this->fail('Unconfigured admin invitation inserted a user');
+            } catch (\Objectiveweb\Auth\UserException $exception) {
+                $this->assertSame(400, $exception->getCode());
+            }
+            $this->assertSame(0, self::$db->count('auth_user', []));
+            $this->assertSame(0, self::$db->count('auth_credentials', []));
+        }
+    }
+
+    public function testAdminInvitationRollsBackAfterDeliveryException(): void
+    {
+        $auth = new DBAuth(self::$db, [
+            'table' => 'auth_user',
+            'credentials_table' => 'auth_credentials',
+            'created' => 'created',
+            'credentials_created' => null,
+            'roles_table' => null,
+            'user_roles_table' => null,
+            'token' => 'token',
+            'invitation_callback' => static function (): void {
+                throw new \RuntimeException('delivery rejected');
+            },
+        ]);
+        try {
+            (new UserController($auth))->post(['uid' => 'admin-invite-failed@example.com']);
+            $this->fail('Invitation callback exception did not roll back user');
+        } catch (\RuntimeException $exception) {
+            $this->assertSame('delivery rejected', $exception->getMessage());
+        }
+
+        $this->assertSame(0, self::$db->count('auth_user', []));
+        $this->assertSame(0, self::$db->count('auth_credentials', []));
+    }
+
+    public function testAdminPasswordlessInvitationCreatesUserWithSetupToken(): void
+    {
+        $received = null;
+        $auth = new DBAuth(self::$db, [
+            'table' => 'auth_user',
+            'credentials_table' => 'auth_credentials',
+            'created' => 'created',
+            'credentials_created' => null,
+            'roles_table' => null,
+            'user_roles_table' => null,
+            'token' => 'token',
+            'invitation_callback' => static function (array $user, array $credentials, string $token)
+                use (&$received): void {
+                $received = compact('user', 'credentials', 'token');
+            },
+        ]);
+        $user = (new UserController($auth))->post(['uid' => 'admin-invited@example.com']);
+
+        $this->assertSame('admin-invited@example.com', $user['credentials'][0]['uid']);
+        $this->assertArrayNotHasKey('token', $user);
+        $this->assertIsArray($received);
+        $this->assertSame($user['id'], $received['user']['id']);
+        $this->assertNotEmpty($received['token']);
+        $this->assertSame(hash('sha256', $received['token']), $auth->get($user['id'])['token']);
+    }
+
     public function testPostMissingUid(): void
     {
         $this->expectException(\Objectiveweb\Auth\UserException::class);
@@ -283,6 +359,193 @@ class UserControllerTest extends TestCase
         $this->expectException(\Objectiveweb\Auth\UserException::class);
         $this->expectExceptionCode(409);
         $controller->post((int) $activeAdmin['id'], 'suspend');
+    }
+
+    public function testFinalAdminGuardCoversSuspendDemoteDeleteAndDirectDisable(): void
+    {
+        self::$db->insert('auth_role', ['name' => 'admin']);
+        $auth = new DBAuth(self::$db, [
+            'table' => 'auth_user',
+            'credentials_table' => 'auth_credentials',
+            'created' => 'created',
+            'token' => 'token',
+            'credentials_last_login' => 'last_login',
+            'credentials_created' => null,
+            'disabled_at' => 'disabled_at',
+            'roles_table' => 'auth_role',
+            'user_roles_table' => 'auth_user_role',
+        ]);
+        $controller = new UserController($auth);
+        $admin = $auth->register('sole-admin@example.com', 'secret', ['roles' => ['admin']]);
+        $auth->register('admin-actor@example.com', 'secret');
+        $auth->login('admin-actor@example.com', 'secret');
+        $id = (int) $admin['id'];
+
+        $mutations = [
+            static fn () => $controller->post($id, 'suspend'),
+            static fn () => $controller->put($id, ['roles' => []]),
+            static fn () => $controller->put($id, ['disabled_at' => '2026-01-01 00:00:00']),
+            static fn () => $controller->put($id, ['roles' => [], 'disabled_at' => '2026-01-01 00:00:00']),
+            static fn () => $controller->delete($id),
+        ];
+        foreach ($mutations as $mutate) {
+            try {
+                $mutate();
+                $this->fail('A mutation removed the final active administrator');
+            } catch (\Objectiveweb\Auth\UserException $exception) {
+                $this->assertSame(409, $exception->getCode());
+            }
+            $stillAdmin = $auth->get($id);
+            $this->assertTrue($auth->is_active($stillAdmin));
+            $this->assertContains('admin', $stillAdmin['roles']);
+        }
+    }
+
+    public function testReducingTwoActiveAdminsToOnePreventsFurtherRemoval(): void
+    {
+        self::$db->insert('auth_role', ['name' => 'admin']);
+        $auth = new DBAuth(self::$db, [
+            'table' => 'auth_user',
+            'credentials_table' => 'auth_credentials',
+            'created' => 'created',
+            'token' => 'token',
+            'credentials_last_login' => 'last_login',
+            'credentials_created' => null,
+            'disabled_at' => 'disabled_at',
+            'roles_table' => 'auth_role',
+            'user_roles_table' => 'auth_user_role',
+        ]);
+        $controller = new UserController($auth);
+        $first = $auth->register('first-admin@example.com', 'secret', ['roles' => ['admin']]);
+        $second = $auth->register('second-admin@example.com', 'secret', ['roles' => ['admin']]);
+        $auth->register('management-actor@example.com', 'secret');
+        $auth->login('management-actor@example.com', 'secret');
+
+        $this->assertSame(['ok' => true], $controller->delete((int) $first['id']));
+        $this->assertCount(1, array_filter(
+            $auth->get_users_by_role('admin'),
+            static fn (array $user): bool => $auth->is_active($user)
+        ));
+        try {
+            $controller->post((int) $second['id'], 'suspend');
+            $this->fail('A second operation removed the last active admin');
+        } catch (\Objectiveweb\Auth\UserException $exception) {
+            $this->assertSame(409, $exception->getCode());
+        }
+        $this->assertTrue($auth->is_active($auth->get($second['id'])));
+    }
+
+    /**
+     * Model a competing transaction committed before the role lock is
+     * acquired. The count must not be read or cached outside the lock.
+     */
+    public function testAdminGuardReloadsActiveCountAfterAcquiringLock(): void
+    {
+        $db = new class('sqlite::memory:') extends DB {
+            public ?\Closure $beforeRoleLock = null;
+            public function update(string $table, array $data, ?array $where = null): int
+            {
+                if ($table === 'role' && $this->beforeRoleLock !== null) {
+                    $callback = $this->beforeRoleLock;
+                    $this->beforeRoleLock = null;
+                    $callback();
+                }
+                return parent::update($table, $data, $where);
+            }
+        };
+        $db->query('CREATE TABLE user (id INTEGER PRIMARY KEY AUTOINCREMENT, uuid TEXT NOT NULL UNIQUE, name TEXT, password TEXT, disabled_at TEXT)')->exec();
+        $db->query('CREATE TABLE user_credentials (uid TEXT NOT NULL, provider TEXT NOT NULL, user_id INTEGER NOT NULL, profile TEXT, token TEXT, token_expires_at TEXT, verified_at TEXT, last_login TEXT, created TEXT, PRIMARY KEY(uid, provider))')->exec();
+        $db->query('CREATE TABLE role (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE)')->exec();
+        $db->query('CREATE TABLE user_roles (user_id INTEGER NOT NULL, role_id INTEGER NOT NULL, PRIMARY KEY(user_id, role_id))')->exec();
+        $db->insert('role', ['id' => 1, 'name' => 'admin']);
+
+        $auth = new DBAuth($db, ['disabled_at' => 'disabled_at', 'created' => null]);
+        $controller = new UserController($auth);
+        $first = $auth->register('race-first@example.com', 'secret', ['roles' => ['admin']]);
+        $second = $auth->register('race-second@example.com', 'secret', ['roles' => ['admin']]);
+        $auth->register('race-actor@example.com', 'secret');
+        $auth->login('race-actor@example.com', 'secret');
+
+        $db->beforeRoleLock = static function () use ($db, $first): void {
+            $db->delete('user_roles', ['user_id' => $first['id']]);
+        };
+        try {
+            $controller->put((int) $second['id'], ['roles' => []]);
+            $this->fail('Stale admin count bypassed serialization guard');
+        } catch (\Objectiveweb\Auth\UserException $exception) {
+            $this->assertSame(409, $exception->getCode());
+        }
+
+        // The simulated concurrent mutation must roll back with the guard.
+        $this->assertCount(2, $auth->get_users_by_role('admin'));
+        $this->assertContains('admin', $auth->get($second['id'])['roles']);
+    }
+
+    public function testDirectDbAuthCallsCannotRemoveFinalActiveAdmin(): void
+    {
+        self::$db->insert('auth_role', ['name' => 'admin']);
+        $auth = new DBAuth(self::$db, [
+            'table' => 'auth_user',
+            'credentials_table' => 'auth_credentials',
+            'created' => 'created',
+            'token' => 'token',
+            'credentials_last_login' => 'last_login',
+            'credentials_created' => null,
+            'disabled_at' => 'disabled_at',
+            'roles_table' => 'auth_role',
+            'user_roles_table' => 'auth_user_role',
+        ]);
+        $admin = $auth->register('direct-admin@example.com', 'secret', ['roles' => ['admin']]);
+        $id = (int) $admin['id'];
+
+        foreach ([
+            static fn () => $auth->update($id, ['roles' => []]),
+            static fn () => $auth->update($id, ['disabled_at' => '2026-01-01 00:00:00']),
+            static fn () => $auth->delete($id),
+        ] as $mutation) {
+            try {
+                $mutation();
+                $this->fail('Direct DBAuth mutation removed the final active admin');
+            } catch (\Objectiveweb\Auth\UserException $exception) {
+                $this->assertSame(409, $exception->getCode());
+            }
+            $user = $auth->get($id);
+            $this->assertTrue($auth->is_active($user));
+            $this->assertContains('admin', $user['roles']);
+        }
+    }
+
+    public function testOrdinaryDbAuthUpdateSkipsAdminRoleLock(): void
+    {
+        $db = new class('sqlite::memory:') extends DB {
+            public int $roleLockCalls = 0;
+            public function update(string $table, array $data, ?array $where = null): int
+            {
+                if ($table === 'role' && isset($where['name'])
+                    && $where['name'] === 'admin' && ($data['name'] ?? '') === 'admin') {
+                    $this->roleLockCalls++;
+                }
+                return parent::update($table, $data, $where);
+            }
+        };
+        $db->query('CREATE TABLE user (id INTEGER PRIMARY KEY AUTOINCREMENT, uuid TEXT NOT NULL UNIQUE, name TEXT, password TEXT, disabled_at TEXT)')->exec();
+        $db->query('CREATE TABLE user_credentials (uid TEXT NOT NULL, provider TEXT NOT NULL, user_id INTEGER NOT NULL, profile TEXT, token TEXT, token_expires_at TEXT, verified_at TEXT, last_login TEXT, created TEXT, PRIMARY KEY(uid, provider))')->exec();
+        $db->query('CREATE TABLE role (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE)')->exec();
+        $db->query('CREATE TABLE user_roles (user_id INTEGER NOT NULL, role_id INTEGER NOT NULL, PRIMARY KEY(user_id, role_id))')->exec();
+        $db->insert('role', ['id' => 1, 'name' => 'admin']);
+
+        $auth = new DBAuth($db, ['disabled_at' => 'disabled_at', 'created' => null]);
+        $first = $auth->register('ordinary-admin@example.com', 'secret', ['roles' => ['admin']]);
+        $auth->register('second-ordinary-admin@example.com', 'secret', ['roles' => ['admin']]);
+        $id = (int) $first['id'];
+
+        $auth->update($id, ['name' => 'Renamed Admin']);
+        $auth->update($id, ['disabled_at' => null]);
+        $auth->update($id, ['roles' => ['admin']]);
+        $this->assertSame(0, $db->roleLockCalls);
+
+        $auth->update($id, ['roles' => []]);
+        $this->assertSame(1, $db->roleLockCalls);
     }
 
     public function testDeleteRejectsUnknownSubresourcesWithoutDeletingUser(): void

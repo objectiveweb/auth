@@ -126,7 +126,9 @@ These options come from both the shared `Auth` contract and `DBAuth`. Set only t
 | `audit_callback` | `null` | Management events: `(actorId, targetId, action, metadata)` |
 | `deletion_guard_callback` | `null` | Return `false` or a conflict string to reject user deletion |
 
-The anonymous `token_callback` receives a **single** credential array containing the one-time token. `Auth::invite()` instead invokes `invitation_callback` or `reset_callback` with **three** arguments; without dedicated callbacks it falls back to `register_callback`/`token_callback`, respectively. Prefer dedicated callbacks when supporting both flows.
+The anonymous `token_callback` receives a **single** credential array containing the one-time token. `Auth::invite()` instead invokes `invitation_callback` or `reset_callback` with **three** arguments; without dedicated callbacks it falls back to `register_callback`/`token_callback`, respectively. Prefer dedicated callbacks when supporting both flows. Setup/reset operations require both an enabled `token` field and a callable delivery callback; missing configuration fails with HTTP 400 before a user is created.
+
+Passwordless registration through either controller passes `true` as the optional fourth argument to `register($uid, $password, $data, bool $invite = false)`. DBAuth creates the user and credential, issues the setup token and invokes the delivery callback inside its existing database transaction, rolling back all changes on any exception. BasicAuth rolls back the in-memory account/credential on failure. Ordinary password registration and OAuth account creation remain unchanged. Outbound messages cannot be rolled back: for guaranteed delivery despite database commit or external delivery failures, use a transactional outbox.
 
 #### Database tables and migrations
 
@@ -291,7 +293,7 @@ $auth->rename_credential($userId, 'phone', '+5511999999999', 'phone', '+55118888
 $auth->delete_credential($userId, 'phone', '+5511888888888');
 ```
 
-`create_credential()` rejects duplicates; `update_credential()` inserts or updates a provider identity and updates its last-login field when configured. Passing `null` as the profile **preserves existing provider metadata** (including during password login) in both `DBAuth` and `BasicAuth`; pass a non-null profile to replace it. `delete_credential()` refuses to remove the user's last credential. Treat raw provider profiles as potentially sensitive; send normalized/sanitized credentials to clients.
+`create_credential()` rejects duplicates; `update_credential()` inserts or updates a provider identity and updates its last-login field when configured. Passing `null` as the profile **preserves existing provider metadata** (including during password login) in both `DBAuth` and `BasicAuth`; pass a non-null profile to replace it. `delete_credential()` uses a per-user row lock inside `$db->transaction()` to make the ownership check, remaining-credential count and deletion atomic across concurrent DBAuth requests; it refuses to remove the user's last credential. Treat raw provider profiles as potentially sensitive; send normalized/sanitized credentials to clients.
 
 ##### Independent credential verification
 
@@ -681,6 +683,17 @@ Applications should make the action visible only after the user chooses **Link a
 The explicit authenticated `postLink()` flow remains distinct from the *anonymous first-time* account choice above. Never interpret an OAuth callback, query-string `intent`, or matching email as permission to link accounts.
 
 ## User-management API
+
+DBAuth enforces the final-active-administrator invariant directly in its
+existing `update()` and `delete()` transactions. Operations that may
+demote or suspend an administrator, and user deletions, serialize through
+a lock on the `admin` role row before counting active administrators.
+Ordinary profile updates and account activation do not acquire that lock.
+This protection also applies to direct DBAuth calls; application code that
+writes to role or user tables without DBAuth must enforce it separately.
+The lock is implemented with a no-op UPDATE, which can activate role-table
+UPDATE triggers.
+
 
 Register `Objectiveweb\Auth\Controller\UserController` at an application-owned
 prefix such as `/api/users`. It requires the `admin` role and supports:

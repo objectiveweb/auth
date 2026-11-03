@@ -262,7 +262,7 @@ class DBAuth extends \Objectiveweb\Auth
         return $this->hydrateUserRow($row);
     }
 
-    public function register($uid, $password = null, $data = array())
+    public function register($uid, $password = null, $data = array(), bool $invite = false)
     {
         if (is_array($uid)) {
             $data = array_merge($uid, $data);
@@ -273,6 +273,12 @@ class DBAuth extends \Objectiveweb\Auth
 
         if (empty($uid)) {
             throw new UserException('Missing uid', 400);
+        }
+        if ($invite) {
+            if (is_string($password) && $password !== '') {
+                throw new UserException('Invitations require passwordless registration', 400);
+            }
+            $this->requireInvitationCallback();
         }
 
         $provider = empty($data['provider']) ? 'local' : $data['provider'];
@@ -323,7 +329,7 @@ class DBAuth extends \Objectiveweb\Auth
             $fields[$this->params['created']] = date('Y-m-d H:i:s');
         }
 
-        return $this->db->transaction(function () use ($uid, $provider, $profile, $fields, $syncRoles, $roles): array {
+        return $this->db->transaction(function () use ($uid, $provider, $profile, $fields, $syncRoles, $roles, $invite): array {
             if ($syncRoles) {
                 $this->resolveRoleIds($roles);
             }
@@ -355,6 +361,10 @@ class DBAuth extends \Objectiveweb\Auth
 
             if ($syncRoles) {
                 $this->syncUserRoles($userId, $roles);
+            }
+            if ($invite) {
+                // Roll back user, credential and setup token if delivery fails.
+                $this->invite($userId);
             }
 
             return $this->sanitize_user($this->get($userId));
@@ -472,8 +482,44 @@ class DBAuth extends \Objectiveweb\Auth
             throw new \InvalidArgumentException('Role sync requested but role tables are disabled');
         }
 
-        // User fields, role definitions and memberships must commit or roll back together.
-        $this->db->transaction(function () use ($column, $user_id, $key, $data, $syncRoles, $roles): void {
+        // Only updates that might remove an active administrator need the
+        // shared lock; routine profile edits, promotions and activation don't.
+        $disabledField = $this->params['disabled_at'];
+        $removesAdminRole = $syncRoles && !in_array('admin', $roles, true);
+        $suspendsAccount = is_string($disabledField) && $disabledField !== ''
+            && !empty($data[$disabledField]);
+        $needsAdminCheck = $this->rolesEnabled() && ($removesAdminRole || $suspendsAccount);
+
+        // User fields, role definitions and memberships commit or roll back
+        // together, including the final-active-admin safeguard.
+        $this->db->transaction(function () use (
+            $column, $user_id, $key, $data, $syncRoles, $roles, $needsAdminCheck
+        ): void {
+            if ($needsAdminCheck) {
+                // All admin-removing DBAuth writes lock the same stable row.
+                // A no-op UPDATE serializes them in MySQL/PostgreSQL, and
+                // obtains SQLite's write lock without dialect-specific SQL.
+                $roleName = (string) $this->params['role_name'];
+                $this->db->update(
+                    (string) $this->params['roles_table'],
+                    [$roleName => 'admin'],
+                    [$roleName => 'admin']
+                );
+
+                // Both the target and count must be loaded after the lock.
+                $target = $this->get($user_id, $key);
+                if (in_array('admin', (array) ($target[$this->params['roles']] ?? []), true)
+                    && $this->is_active($target)) {
+                    $activeAdmins = array_filter(
+                        $this->get_users_by_role('admin'),
+                        fn (array $user): bool => $this->is_active($user)
+                    );
+                    if (count($activeAdmins) <= 1) {
+                        throw new UserException('Cannot remove or suspend the final active administrator', 409);
+                    }
+                }
+            }
+
             if (!empty($data)) {
                 foreach ($data as $k => $v) {
                     if (is_array($v)) {
@@ -502,6 +548,28 @@ class DBAuth extends \Objectiveweb\Auth
         }
 
         return $this->db->transaction(function () use ($user_id): bool {
+            if ($this->rolesEnabled()) {
+                // Serialize deletion with any demotion/suspension of an admin.
+                $roleName = (string) $this->params['role_name'];
+                $this->db->update(
+                    (string) $this->params['roles_table'],
+                    [$roleName => 'admin'],
+                    [$roleName => 'admin']
+                );
+
+                $target = $this->get($user_id);
+                if (in_array('admin', (array) ($target[$this->params['roles']] ?? []), true)
+                    && $this->is_active($target)) {
+                    $activeAdmins = array_filter(
+                        $this->get_users_by_role('admin'),
+                        fn (array $user): bool => $this->is_active($user)
+                    );
+                    if (count($activeAdmins) <= 1) {
+                        throw new UserException('Cannot remove or suspend the final active administrator', 409);
+                    }
+                }
+            }
+
             $guard = $this->params['deletion_guard_callback'];
             if (is_callable($guard)) {
                 $result = call_user_func($guard, $user_id);
@@ -803,19 +871,37 @@ class DBAuth extends \Objectiveweb\Auth
 
     public function delete_credential($userid, string $provider, string $uid): bool
     {
-        $credential = $this->get_credential($provider, $uid);
-        if (!$credential || ($credential['user_id'] ?? null) != $userid) {
-            throw new UserException('Credential not found', 404);
-        }
-        if (count($this->get_credentials($userid)) <= 1) {
-            throw new UserException('A user must have at least one credential', 409);
-        }
-        $this->db->delete($this->params['credentials_table'], [
-            'user_id' => $userid,
-            'provider' => $provider,
-            'uid' => $uid,
-        ]);
-        return true;
+        return $this->db->transaction(function (DB $db) use ($userid, $provider, $uid): bool {
+            // Serialize deletions for this user using its stable parent row.
+            // A no-op UPDATE takes an exclusive row lock on MySQL/PostgreSQL
+            // and a write lock on SQLite, without database-specific SQL.
+            // Read the credential and its count only after acquiring the lock.
+            $idField = (string) $this->params['id'];
+            $db->update(
+                (string) $this->params['table'],
+                [$idField => $userid],
+                [$idField => $userid]
+            );
+
+            $credential = $this->get_credential($provider, $uid);
+            if (!$credential || ($credential['user_id'] ?? null) != $userid) {
+                throw new UserException('Credential not found', 404);
+            }
+            if ($db->count((string) $this->params['credentials_table'], ['user_id' => $userid]) <= 1) {
+                throw new UserException('A user must have at least one credential', 409);
+            }
+
+            $deleted = $db->delete((string) $this->params['credentials_table'], [
+                'user_id' => $userid,
+                'provider' => $provider,
+                'uid' => $uid,
+            ]);
+            if ($deleted !== 1) {
+                throw new UserException('Credential not found', 404);
+            }
+
+            return true;
+        });
     }
 
     public function get_credentials($user_id, $key = 'id'): array
