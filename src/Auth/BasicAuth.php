@@ -176,7 +176,18 @@ class BasicAuth extends \Objectiveweb\Auth
             throw new UserException('User not found', 404);
         }
 
-        $this->users[$resolved][$this->params['password']] = self::hash($password);
+        $changes = [$this->params['password'] => self::hash($password)];
+        $tokenField = $this->params['token'];
+        if (is_string($tokenField) && $tokenField !== '') {
+            $changes[$tokenField] = null;
+            $expiresField = $this->params['token_expires_field'];
+            if (is_string($expiresField) && $expiresField !== '') {
+                $changes[$expiresField] = null;
+            }
+        }
+
+        // Apply password replacement and reset-token revocation together.
+        $this->users[$resolved] = array_replace($this->users[$resolved], $changes);
         return true;
     }
 
@@ -393,18 +404,25 @@ class BasicAuth extends \Objectiveweb\Auth
         }
 
         $created = $this->credentials[$provider][$uid]['created'] ?? date('Y-m-d H:i:s');
+        $updates = [
+            'user_id' => $userid,
+            'provider' => $provider,
+            'uid' => $uid,
+            'last_login' => date('Y-m-d H:i:s'),
+            'created' => $created,
+        ];
+        // A null profile means "leave unchanged", as in DBAuth. Password
+        // login passes null here and must not erase stored provider metadata.
+        if ($profile !== null) {
+            $updates['profile'] = $profile;
+        }
+
         $this->credentials[$provider][$uid] = array_merge([
             'token' => null,
             'token_expires_at' => null,
             'verified_at' => null,
-        ], $existing ?: [], [
-            'user_id' => $userid,
-            'provider' => $provider,
-            'uid' => $uid,
-            'profile' => $profile,
-            'last_login' => date('Y-m-d H:i:s'),
-            'created' => $created,
-        ]);
+            'profile' => null,
+        ], $existing ?: [], $updates);
 
         return true;
     }

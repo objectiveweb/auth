@@ -285,19 +285,88 @@ class UserControllerTest extends TestCase
         $controller->post((int) $activeAdmin['id'], 'suspend');
     }
 
-    public function testDelete(): void
+    public function testDeleteRejectsUnknownSubresourcesWithoutDeletingUser(): void
     {
-        $this->expectException(\Objectiveweb\Auth\UserException::class);
+        self::$controller->post([
+            'uid' => 'actor@example.com',
+            'password' => 'test',
+        ]);
+        $target = self::$controller->post([
+            'uid' => 'target@example.com',
+            'password' => 'test',
+        ]);
+        self::$auth->login('actor@example.com', 'test');
 
-        $user = self::$controller->post([
-            'uid' => 'vagrant@localhost',
+        foreach (['unknown', '', 'suspend', 'roles'] as $resource) {
+            try {
+                self::$controller->delete((int) $target['id'], $resource);
+                $this->fail('Expected invalid delete subresource to be rejected');
+            } catch (\Objectiveweb\Auth\UserException $exception) {
+                $this->assertSame(404, $exception->getCode());
+            }
+            $this->assertSame(
+                (int) $target['id'],
+                (int) self::$controller->get((int) $target['id'])['id']
+            );
+            $this->assertNotFalse(self::$auth->get_credential('local', 'target@example.com'));
+        }
+
+        // Stray nested path parameters without a resource are also invalid.
+        try {
+            self::$controller->delete((int) $target['id'], null, 'local', 'target@example.com');
+            $this->fail('Expected incomplete subresource path to be rejected');
+        } catch (\Objectiveweb\Auth\UserException $exception) {
+            $this->assertSame(404, $exception->getCode());
+        }
+        $this->assertSame(
+            (int) $target['id'],
+            (int) self::$controller->get((int) $target['id'])['id']
+        );
+    }
+
+    public function testDeleteUserOnlyAtBaseResource(): void
+    {
+        self::$controller->post([
+            'uid' => 'actor@example.com',
+            'password' => 'test',
+        ]);
+        $target = self::$controller->post([
+            'uid' => 'target@example.com',
             'password' => 'test',
             'name' => 'Test User',
         ]);
+        self::$auth->login('actor@example.com', 'test');
 
-        $deleted = self::$controller->delete((int) $user['id']);
-        $this->assertTrue($deleted);
+        $this->assertSame(['ok' => true], self::$controller->delete((int) $target['id']));
+        $this->assertFalse(self::$auth->get_credential('local', 'target@example.com'));
 
-        self::$controller->get((int) $user['id']);
+        $this->expectException(\Objectiveweb\Auth\UserException::class);
+        $this->expectExceptionCode(404);
+        self::$controller->get((int) $target['id']);
+    }
+
+    public function testDeleteCredentialDoesNotDeleteUser(): void
+    {
+        self::$controller->post([
+            'uid' => 'actor@example.com',
+            'password' => 'test',
+        ]);
+        $target = self::$controller->post([
+            'uid' => 'target@example.com',
+            'password' => 'test',
+        ]);
+        self::$auth->create_credential((int) $target['id'], 'phone', '+5511999999999');
+        self::$auth->login('actor@example.com', 'test');
+
+        $this->assertSame(
+            ['ok' => true],
+            self::$controller->delete((int) $target['id'], 'credentials', 'phone', '%2B5511999999999')
+        );
+        $this->assertFalse(self::$auth->get_credential('phone', '+5511999999999'));
+        $this->assertNotFalse(self::$auth->get_credential('local', 'target@example.com'));
+        $this->assertSame(
+            (int) $target['id'],
+            (int) self::$controller->get((int) $target['id'])['id']
+        );
     }
 }

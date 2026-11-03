@@ -189,7 +189,9 @@ abstract class Auth
     public function user_can(string $ability, mixed ...$args): bool|array
     {
         if (count($args) === 0) {
-            if (!$this->check()) {
+            // Permission decisions must not trust roles or account status cached
+            // at login. Revalidation also logs out deleted or suspended users.
+            if (!$this->revalidate()) {
                 return false;
             }
 
@@ -213,12 +215,10 @@ abstract class Auth
             throw new \InvalidArgumentException('Invalid user_can() signature');
         }
 
-        if (!$this->check()) {
-            if ($mode === 'resource_list') {
-                return [];
-            }
-
-            return false;
+        // Revalidate relation checks too: a stale session must not retain
+        // access to associations after the account is disabled or removed.
+        if (!$this->revalidate()) {
+            return $mode === 'resource_list' ? [] : false;
         }
 
         $subjectId = $this->currentUserId();

@@ -215,7 +215,10 @@ class AuthController
                 throw new UserException('Invalid request', 400);
             }
 
-            // find user by recovery channels
+            // Anonymous recovery must prove ownership of the *recovery
+            // channel*, not just find a credential attached to the account.
+            // This includes 'local': knowing a local password does not prove
+            // control over the email/phone identifier used for recovery.
             $credential = false;
             $providers = $this->auth->params['recovery_providers'];
             if (!is_array($providers)) {
@@ -224,8 +227,11 @@ class AuthController
 
             foreach ($providers as $provider) {
                 $candidate = $this->auth->get_credential($provider, $form['uid']);
-                if ($credential === false && !empty($candidate['user_id'])) {
+                if (is_array($candidate)
+                    && !empty($candidate['user_id'])
+                    && !empty($candidate['verified_at'])) {
                     $credential = $candidate;
+                    break;
                 }
             }
 
