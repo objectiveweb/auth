@@ -69,4 +69,17 @@ if ($uuidIndex === false) {
     exit(1);
 }
 
+$tokenIndex = $pdo->query(
+    "SELECT indexdef
+       FROM pg_indexes
+      WHERE schemaname = current_schema()
+        AND tablename = 'user'
+        AND indexdef ILIKE '%token%'"
+)->fetchColumn();
+
+if ($tokenIndex === false) {
+    fwrite(STDERR, "Missing index for user.token\n");
+    exit(1);
+}
+
 echo "Migration schema matches DBAuth defaults.\n";

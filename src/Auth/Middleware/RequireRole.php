@@ -24,7 +24,7 @@ class RequireRole implements MiddlewareInterface
         return $response;
     }
 
-    public function before(string $method, string $fn, array $params): mixed
+    public function before(string $method, string $fn, array $params): array
     {
         if ($this->auth->check() && !$this->auth->revalidate()) {
             throw new AuthException('Forbidden', 401);
