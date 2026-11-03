@@ -171,6 +171,19 @@ $auth = new DBAuth($db, [
 
 Configure a prefix only on `DB` rather than manually including it in these table names. With the default configuration, **both** role tables are expected. To disable database roles, set **both** `roles_table` and `user_roles_table` to `null`; no role columns belong in the user table.
 
+#### Public registration
+
+`AuthController::postRegister()` accepts only `uid` (email), `password`,
+and optional `name` and `image`. It always creates a `local` credential.
+Role requests are ignored; provider names, OAuth profiles, IDs, suspension
+state, tokens, and other fields are rejected with HTTP 400.
+
+This prevents clients from claiming external provider identities, but **does
+not verify ownership of the submitted email address**. Applications must
+complete email verification before treating an email as verified. Explicit
+provider registration using `DBAuth::register()` is reserved for trusted
+application code after authenticating the provider's identity.
+
 #### Users
 
 `register()` creates the user and its initial credential transactionally. It returns a **sanitized** user. `get()` returns the provider's **raw** user record, including sensitive fields; sanitize it before exposing it to clients.
@@ -259,7 +272,7 @@ $auth->update($admin['id'], ['roles' => ['admin', 'editor']]);
 $auth->user_can('admin'); // bool
 ```
 
-Direct `DBAuth::register()` / `update()` can create role definitions when syncing names that do not exist. The **admin UserController API** is intentionally stricter and accepts only *existing* role names: seed the allowed roles before using its role-management endpoints. Keep `register_allow_grants` disabled for public registration. Both `roles_table` and `user_roles_table` must be disabled together if roles are not wanted.
+Direct `DBAuth::register()` / `update()` can create role definitions when syncing names that do not exist. The **admin UserController API** is intentionally stricter and accepts only *existing* role names: seed the allowed roles before using its role-management endpoints. The public registration controller always ignores role grants, regardless of `register_allow_grants`. Both `roles_table` and `user_roles_table` must be disabled together if roles are not wanted.
 
 #### Relations and authorization
 

@@ -30,6 +30,59 @@ class AuthControllerTest extends TestCase
         $_SESSION = [];
     }
 
+    public function testLogoutWithoutRedirectEndsSession(): void
+    {
+        $this->auth->register('logout@example.com', 'secret');
+        $this->auth->login('logout@example.com', 'secret');
+
+        $this->assertSame([], $this->controller->getLogout());
+        $this->assertFalse($this->auth->check());
+    }
+
+    public function testLogoutRejectsUnsafeRedirectsBeforeEndingSession(): void
+    {
+        $this->auth->register('logout@example.com', 'secret');
+        $this->auth->login('logout@example.com', 'secret');
+
+        $invalid = [
+            'https://evil.example/',
+            'http://evil.example/',
+            '//evil.example/',
+            '\\evil.example\\path',
+            '/\\evil.example/path',
+            'javascript:alert(1)',
+            'account',
+            "/safe\r\nLocation: https://evil.example/",
+        ];
+
+        foreach ($invalid as $redirect) {
+            try {
+                $this->controller->getLogout(['redirect' => $redirect]);
+                $this->fail("Unsafe redirect was accepted: {$redirect}");
+            } catch (UserException $exception) {
+                $this->assertSame(400, $exception->getCode());
+                $this->assertSame('Invalid redirect', $exception->getMessage());
+                $this->assertTrue($this->auth->check());
+            }
+        }
+    }
+
+    public function testLogoutRedirectValidatorAcceptsSameOriginPaths(): void
+    {
+        $controller = new class($this->auth) extends AuthController {
+            public function validateRedirect(mixed $redirect): string
+            {
+                return $this->normalizeLogoutRedirect($redirect);
+            }
+        };
+
+        $this->assertSame('/', $controller->validateRedirect('/'));
+        $this->assertSame(
+            '/account/logout?done=1#top',
+            $controller->validateRedirect('/account/logout?done=1#top')
+        );
+    }
+
     public function testPostMissingUid(): void
     {
         $this->expectException(UserException::class);
@@ -298,6 +351,65 @@ class AuthControllerTest extends TestCase
         $result = $controller->postPassword(['uid' => 'local@example.com']);
 
         $this->assertSame([], $result);
+    }
+
+    public function testPublicRegistrationCreatesOnlyLocalCredential(): void
+    {
+        $user = $this->controller->postRegister([
+            'uid' => 'new@example.com',
+            'password' => 'secret',
+            'name' => 'New user',
+        ]);
+
+        $this->assertNotFalse($this->auth->get_credential('local', 'new@example.com'));
+        $this->assertFalse($this->auth->get_credential('email', 'new@example.com'));
+        $this->assertSame('New user', $user['name']);
+    }
+
+    public function testPublicRegistrationRejectsProviderAndPrivilegedAttributes(): void
+    {
+        $payloads = [
+            ['provider' => 'google'],
+            ['provider' => 'email'],
+            ['provider' => 'local'],
+            ['profile' => ['email_verified' => true]],
+            ['id' => 100],
+            ['uuid' => 'fake-uuid'],
+            ['disabled_at' => null],
+            ['token' => 'forged'],
+            ['context' => ['admin' => true]],
+        ];
+
+        foreach ($payloads as $i => $payload) {
+            $uid = "forbidden-{$i}@example.com";
+            try {
+                $this->controller->postRegister(array_merge([
+                    'uid' => $uid,
+                    'password' => 'secret',
+                ], $payload));
+                $this->fail('Untrusted registration field was accepted');
+            } catch (UserException $e) {
+                $this->assertSame(400, $e->getCode());
+            }
+            $this->assertFalse($this->auth->get_credential('local', $uid));
+            $this->assertFalse($this->auth->get_credential('email', $uid));
+            $this->assertFalse($this->auth->get_credential('google', $uid));
+        }
+    }
+
+    public function testPublicRegistrationNeverAllowsRoleGrants(): void
+    {
+        $auth = new BasicAuth([], [
+            'token' => 'token',
+            'register_allow_grants' => true,
+        ]);
+        $controller = new AuthController($auth);
+        $user = $controller->postRegister([
+            'uid' => 'no-admin@example.com',
+            'password' => 'secret',
+            'roles' => ['admin'],
+        ]);
+        $this->assertSame([], $user['roles'] ?? []);
     }
 
     public function testPostRegisterStripsRolesByDefault(): void
