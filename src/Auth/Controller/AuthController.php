@@ -236,12 +236,14 @@ class AuthController
                     try {
                         call_user_func($this->auth->params['token_callback'], $credential);
                     } catch (\Throwable $exception) {
-                        error_log(
-                            'Password recovery delivery failed: '
-                            . $exception::class
-                            . ': '
-                            . $exception->getMessage()
-                        );
+                        // Delivery exceptions can contain reset URLs, tokens
+                        // and recipient details. Log only a safe error type
+                        // and an opaque reference for operational correlation.
+                        error_log(sprintf(
+                            'Password recovery delivery failed [ref=%s]: %s',
+                            bin2hex(random_bytes(8)),
+                            $exception::class
+                        ));
                     }
                 }
             }

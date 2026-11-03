@@ -665,19 +665,41 @@ class DBAuth extends \Objectiveweb\Auth
             return false;
         }
 
-        // Consume the matching token atomically. Concurrent attempts cannot
-        // both mark the same credential verified.
-        return $this->db->update($this->params['credentials_table'], [
-            'verified_at' => date('Y-m-d H:i:s'),
-            'token' => null,
-            'token_expires_at' => null,
-        ], [
-            'user_id' => $credential['user_id'],
-            'provider' => $provider,
-            'uid' => $uid,
-            'token' => $digest,
-            'verified_at' => null,
-        ]) === 1;
+        // Match the expiry snapshot as well as the token, so concurrent
+        // rotation or expiry changes invalidate this attempt. Check the clock
+        // again after the conditional UPDATE and roll back if it expired
+        // between the initial read and the write.
+        $expiredDuringRedemption = new \RuntimeException('Credential token expired during redemption');
+        try {
+            return $this->db->transaction(function (DB $db) use (
+                $credential, $provider, $uid, $digest, $expires, $expiredDuringRedemption
+            ): bool {
+                $updated = $db->update($this->params['credentials_table'], [
+                    'verified_at' => date('Y-m-d H:i:s'),
+                    'token' => null,
+                    'token_expires_at' => null,
+                ], [
+                    'user_id' => $credential['user_id'],
+                    'provider' => $provider,
+                    'uid' => $uid,
+                    'token' => $digest,
+                    'token_expires_at' => $expires,
+                    'verified_at' => null,
+                ]);
+                if ($updated !== 1) {
+                    return false;
+                }
+                if ($expires <= date('Y-m-d H:i:s')) {
+                    throw $expiredDuringRedemption;
+                }
+                return true;
+            });
+        } catch (\RuntimeException $exception) {
+            if ($exception === $expiredDuringRedemption) {
+                return false;
+            }
+            throw $exception;
+        }
     }
 
     public function mark_credential_verified($userid, string $provider, string $uid): void
