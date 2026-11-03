@@ -4,7 +4,7 @@
 
 ## Summary
 
-v0.2.0 is a **breaking rewrite** of `objectiveweb/auth`. It introduces a provider-based authentication core, a portable `objectiveweb/db` backend, a complete in-memory implementation, secure OAuth login/linking flows, role-based authorization, reusable management controllers and stronger session/token handling.
+v0.2.0 is a **breaking rewrite** of `objectiveweb/auth`. It introduces a provider-based authentication core, a portable `objectiveweb/db` backend, an in-memory reference/test provider, secure OAuth login/linking flows, role-based authorization, reusable management controllers and stronger session/token handling.
 
 **Do not upgrade an existing 0.1.x application in place without a migration plan.** The former PDO-backed class, tables and controller paths are incompatible with v0.2.0.
 
@@ -12,7 +12,7 @@ Read the [upgrade guide](UPGRADING-0.2.0.md) and [full changelog](../CHANGELOG.m
 
 ## Highlights
 
-- **Provider architecture:** abstract `Objectiveweb\Auth`, database-backed `Objectiveweb\Auth\DBAuth` and `BasicAuth` for small/in-memory deployments.
+- **Provider architecture:** abstract `Objectiveweb\Auth`, database-backed `Objectiveweb\Auth\DBAuth` and `BasicAuth` exclusively for tests, examples and custom-provider development (not production).
 - **Portable data model:** independent user and provider-credential records; UUID, roles, user-role memberships, optional delegations, session context callbacks and normalized `Collection` queries.
 - **Password and credential protection:** generic invalid-login responses, sanitized public users, expiring SHA-256 reset/verification token digests, atomic single-use redemption, CSRF-protected authenticated password changes and account suspension checks.
 - **OAuth hardening:** configured HTTPS callback URLs, PKCE S256, bound one-time state, safe provider-profile handling and **explicit account linking** without email-based account takeover.
@@ -22,7 +22,7 @@ Read the [upgrade guide](UPGRADING-0.2.0.md) and [full changelog](../CHANGELOG.m
 
 ## Required changes for existing applications
 
-1. Upgrade to **PHP 8.2+** and `objectiveweb/db ^0.8.0`. The 0.1.x concrete `new Auth($pdo, ...)` API is removed; instantiate `DBAuth(new DB(...))` or `BasicAuth`.
+1. Upgrade to **PHP 8.2+** and `objectiveweb/db ^0.8.0`. The 0.1.x concrete `new Auth($pdo, ...)` API is removed; use `DBAuth(new DB(...))` for production; `BasicAuth` is a reference/test implementation only.
 2. Provision the **new user/credentials schema** and manually map legacy `ow_auth` users and their login IDs. There is **no automatic 0.1.x data migration**.
 3. Replace legacy `Objectiveweb\Auth\AuthController` routes with `Objectiveweb\Auth\Controller\AuthController` and `UserController`; update role enforcement, JSON/CSRF requirements, and `Collection` response handling.
 4. Invalidate legacy plaintext password-reset links and old sessions, then confirm new reset, registration and login flows in staging.

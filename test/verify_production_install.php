@@ -41,21 +41,64 @@ foreach ($required as $class) {
 $assert(!class_exists(\PHPUnit\Framework\TestCase::class), 'PHPUnit was installed in production');
 $assert(!class_exists(\Phinx\Migration\AbstractMigration::class), 'Phinx was installed in production');
 
-$_SESSION = [];
-$auth = new \Objectiveweb\Auth\BasicAuth();
-$new = $auth->register('production@example.com', 'production-password', ['name' => 'Production User']);
-$assert(!empty($new['id']), 'BasicAuth registration failed without dev dependencies');
-$assert(!array_key_exists('password', $new), 'Registration response exposed password');
-$logged = $auth->login('production@example.com', 'production-password');
-$assert($logged['id'] === $new['id'] && $auth->check(), 'BasicAuth login failed');
-$assert($auth->user()['name'] === 'Production User', 'BasicAuth session context failed');
-$auth->logout();
-$assert(!$auth->check(), 'BasicAuth logout failed');
-
-// The DB abstraction must resolve from require, not require-dev. Instantiate
-// DBAuth against SQLite without relying on Phinx or PHPUnit to create schema.
+// Exercise the production DB-backed provider with only runtime dependencies.
+// This deliberately does not rely on Phinx (a development dependency).
 $db = new \Objectiveweb\DB('sqlite::memory:');
-$dbAuth = new \Objectiveweb\Auth\DBAuth($db, ['roles_table' => null, 'user_roles_table' => null]);
-$assert(!$dbAuth->check(), 'DBAuth did not initialize in production');
+$db->query(
+    'CREATE TABLE auth_user (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        uuid TEXT NOT NULL UNIQUE,
+        name TEXT,
+        created TEXT,
+        password TEXT,
+        token TEXT,
+        token_expires_at TEXT,
+        disabled_at TEXT
+    )'
+)->exec();
+$db->query(
+    'CREATE TABLE auth_credentials (
+        uid TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        user_id INTEGER NOT NULL,
+        profile TEXT,
+        token TEXT,
+        token_expires_at TEXT,
+        verified_at TEXT,
+        last_login TEXT,
+        created TEXT,
+        PRIMARY KEY(uid, provider)
+    )'
+)->exec();
 
-echo "Production Composer autoload, runtime dependencies and authentication smoke test passed.\n";
+$_SESSION = [];
+$auth = new \Objectiveweb\Auth\DBAuth($db, [
+    'table' => 'auth_user',
+    'credentials_table' => 'auth_credentials',
+    'roles_table' => null,
+    'user_roles_table' => null,
+    'token' => 'token',
+    'disabled_at' => 'disabled_at',
+]);
+
+$new = $auth->register('production@example.com', 'production-password', ['name' => 'Production User']);
+$assert(!empty($new['id']), 'DBAuth registration failed without dev dependencies');
+$assert(!array_key_exists('password', $new), 'Registration response exposed password');
+$assert(
+    password_verify('production-password', $auth->get($new['id'])['password']),
+    'DBAuth did not store a valid password hash'
+);
+$logged = $auth->login('production@example.com', 'production-password');
+$assert($logged['id'] === $new['id'] && $auth->check(), 'DBAuth login failed');
+$assert($auth->user()['name'] === 'Production User', 'DBAuth session context failed');
+$assert($auth->revalidate(), 'DBAuth session revalidation failed');
+
+$auth->passwd($new['id'], 'changed-password');
+$auth->logout();
+$assert(!$auth->check(), 'DBAuth logout failed');
+$logged = $auth->login('production@example.com', 'changed-password');
+$assert($logged['id'] === $new['id'], 'DBAuth password change failed');
+$auth->logout();
+$assert(!$auth->check(), 'DBAuth final logout failed');
+
+echo "Production Composer autoload, runtime dependencies and DBAuth authentication smoke test passed.\n";
