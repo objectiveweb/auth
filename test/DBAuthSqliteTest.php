@@ -122,6 +122,7 @@ class DBAuthSqliteTest extends TestCase
                     'target_key' => 'target_user_id',
                     'ability_key' => 'ability',
                     'target_is_user' => true,
+                    'auth_owned' => true,
                 ],
                 'item' => [
                     'table' => 'item_users',
@@ -293,6 +294,31 @@ class DBAuthSqliteTest extends TestCase
 
         $logged = self::$auth->login('alice@example.com', 'new-secret');
         $this->assertSame($user['id'], $logged['id']);
+    }
+
+    public function testPasswdInvalidatesOutstandingResetToken(): void
+    {
+        $user = self::$auth->register('revoke-reset@example.com', 'original-secret');
+        $token = self::$auth->update_token($user['id']);
+        $before = self::$auth->get($user['id']);
+        $this->assertSame(hash('sha256', $token), $before['token']);
+        $this->assertNotNull($before['token_expires_at']);
+
+        $this->assertTrue(self::$auth->passwd($user['id'], 'changed-secret'));
+        $after = self::$auth->get($user['id']);
+        $this->assertTrue(password_verify('changed-secret', $after['password']));
+        $this->assertNull($after['token']);
+        $this->assertNull($after['token_expires_at']);
+
+        try {
+            self::$auth->passwd_reset($token, 'should-not-work');
+            $this->fail('A reset link issued before password change was accepted');
+        } catch (UserException $exception) {
+            $this->assertSame(404, $exception->getCode());
+        }
+
+        $this->assertSame($user['id'], self::$auth->login('revoke-reset@example.com', 'changed-secret')['id']);
+        $this->assertTrue(password_verify('changed-secret', self::$auth->get($user['id'])['password']));
     }
 
     public function testUpdate(): void
@@ -633,6 +659,7 @@ class DBAuthSqliteTest extends TestCase
     public function testDbAuthAuthenticatedPasswordChangeVerifiesCurrentPassword(): void
     {
         $user = self::$auth->register('db-password-change@example.com', 'old-secret');
+        $outstandingReset = self::$auth->update_token($user['id']);
         self::$auth->login('db-password-change@example.com', 'old-secret');
         $controller = new AuthController(self::$auth);
 
@@ -657,7 +684,16 @@ class DBAuthSqliteTest extends TestCase
                 'password' => 'new-secret',
                 'confirm' => 'new-secret',
             ]));
-            $this->assertTrue(password_verify('new-secret', self::$auth->get($user['id'])['password']));
+            $updated = self::$auth->get($user['id']);
+            $this->assertTrue(password_verify('new-secret', $updated['password']));
+            $this->assertNull($updated['token']);
+            $this->assertNull($updated['token_expires_at']);
+            try {
+                self::$auth->passwd_reset($outstandingReset, 'stale-reset-secret');
+                $this->fail('Authenticated password change left a reset token active');
+            } catch (UserException $exception) {
+                $this->assertSame(404, $exception->getCode());
+            }
 
             self::$auth->logout();
             $this->assertSame($user['id'], self::$auth->login('db-password-change@example.com', 'new-secret')['id']);
@@ -667,6 +703,41 @@ class DBAuthSqliteTest extends TestCase
             } else {
                 $_SERVER['HTTP_X_CSRF_TOKEN'] = $originalHeader;
             }
+        }
+    }
+
+    public function testAnonymousRecoveryUsesOnlyVerifiedDbAuthCredentials(): void
+    {
+        $user = self::$auth->register('db-recovery@example.com', 'secret');
+        $controller = new AuthController(self::$auth);
+        $deliveries = [];
+        $previousCallback = self::$auth->params['token_callback'];
+        self::$auth->params['token_callback'] = static function (array $credential) use (&$deliveries): void {
+            $deliveries[] = $credential;
+        };
+
+        try {
+            $existingToken = self::$auth->update_token($user['id']);
+            $existingDigest = self::$auth->get($user['id'])['token'];
+
+            $this->assertSame([], $controller->postPassword(['uid' => 'db-recovery@example.com']));
+            $this->assertSame([], $controller->postPassword(['uid' => 'unknown@example.com']));
+            $this->assertSame([], $deliveries);
+            $this->assertSame($existingDigest, self::$auth->get($user['id'])['token']);
+
+            $proof = self::$auth->issue_credential_token($user['id'], 'local', 'db-recovery@example.com');
+            $this->assertTrue(self::$auth->verify_credential_token('local', 'db-recovery@example.com', $proof));
+
+            $this->assertSame([], $controller->postPassword(['uid' => 'db-recovery@example.com']));
+            $this->assertCount(1, $deliveries);
+            $this->assertSame('local', $deliveries[0]['provider']);
+            $this->assertNotSame($existingToken, $deliveries[0]['token']);
+            $this->assertSame(
+                hash('sha256', $deliveries[0]['token']),
+                self::$auth->get($user['id'])['token']
+            );
+        } finally {
+            self::$auth->params['token_callback'] = $previousCallback;
         }
     }
 
@@ -775,16 +846,136 @@ class DBAuthSqliteTest extends TestCase
         $this->assertSame(['admin'], $current['roles']);
     }
 
+    public function testUserCanRevalidatesRolesAfterChangesOutsideSession(): void
+    {
+        $user = self::$auth->register('role-refresh@example.com', 'secret', [
+            'roles' => ['admin'],
+        ]);
+        self::$auth->login('role-refresh@example.com', 'secret');
+        $this->assertTrue(self::$auth->user_can('admin'));
+
+        // Updating a user does not update the existing session by itself.
+        self::$auth->update($user['id'], ['roles' => ['editor']]);
+        $this->assertSame(['admin'], self::$auth->user()['roles']);
+
+        $this->assertFalse(self::$auth->user_can('admin'));
+        $this->assertTrue(self::$auth->user_can('editor'));
+        $this->assertSame(['editor'], self::$auth->user()['roles']);
+        $this->assertTrue(self::$auth->check());
+
+        // Revocations and grants are both visible on the next permission check.
+        self::$auth->update($user['id'], ['roles' => []]);
+        $this->assertFalse(self::$auth->user_can('editor'));
+        $this->assertSame([], self::$auth->user()['roles']);
+    }
+
+    public function testUserCanRejectsSuspendedAccountForAllCheckModes(): void
+    {
+        $user = self::$auth->register('suspended-permissions@example.com', 'secret', [
+            'roles' => ['admin'],
+        ]);
+        $sessionUser = self::$auth->login('suspended-permissions@example.com', 'secret');
+
+        self::$db->insert('item_users', [
+            'user_id' => $user['id'],
+            'item_id' => 7,
+            'ability' => 'manage',
+        ]);
+        self::$db->insert('user_delegations', [
+            'user_id' => $user['id'],
+            'target_user_id' => 123,
+            'ability' => 'manage',
+        ]);
+        $this->assertTrue(self::$auth->user_can('admin'));
+        $this->assertTrue(self::$auth->user_can('manage', 123));
+        $this->assertTrue(self::$auth->user_can('manage', 'item', 7));
+        $this->assertSame([7], self::$auth->user_can('manage', 'item'));
+
+        self::$auth->update($user['id'], ['disabled_at' => '2026-10-20 12:00:00']);
+        $sessionKey = self::$auth->params['session_key'];
+
+        // Each restored snapshot represents a different pre-existing session.
+        $_SESSION[$sessionKey] = $sessionUser;
+        $this->assertFalse(self::$auth->user_can('admin'));
+        $this->assertFalse(self::$auth->check());
+
+        $_SESSION[$sessionKey] = $sessionUser;
+        $this->assertFalse(self::$auth->user_can('manage', 123));
+        $this->assertFalse(self::$auth->check());
+
+        $_SESSION[$sessionKey] = $sessionUser;
+        $this->assertFalse(self::$auth->user_can('manage', 'item', 7));
+        $this->assertFalse(self::$auth->check());
+
+        $_SESSION[$sessionKey] = $sessionUser;
+        $this->assertSame([], self::$auth->user_can('manage', 'item'));
+        $this->assertFalse(self::$auth->check());
+    }
+
+    public function testUserCanRejectsSessionForDeletedUser(): void
+    {
+        $user = self::$auth->register('deleted-permissions@example.com', 'secret', [
+            'roles' => ['admin'],
+        ]);
+        $sessionUser = self::$auth->login('deleted-permissions@example.com', 'secret');
+
+        self::$auth->logout();
+        self::$auth->delete($user['id']);
+
+        // A separate browser still carries an old session snapshot.
+        $_SESSION[self::$auth->params['session_key']] = $sessionUser;
+        $this->assertFalse(self::$auth->user_can('admin'));
+        $this->assertFalse(self::$auth->check());
+    }
+
     public function testUpdateRolesReplacesAssignments(): void
     {
         $user = self::$auth->register('roles@example.com', 'secret', [
+            'name' => 'Before',
             'roles' => ['partner'],
         ]);
 
-        self::$auth->update($user['id'], ['roles' => ['operator', 'admin']]);
+        self::$auth->update($user['id'], ['name' => 'After', 'roles' => ['operator', 'admin']]);
         $reloaded = self::$auth->get($user['id']);
 
+        $this->assertSame('After', $reloaded['name']);
         $this->assertSame(['admin', 'operator'], $reloaded['roles']);
+    }
+
+    public function testUpdateRollsBackUserFieldsRoleDefinitionsAndMembershipsOnFailure(): void
+    {
+        $user = self::$auth->register('rollback-roles@example.com', 'secret', [
+            'name' => 'Before',
+            'roles' => ['partner'],
+        ]);
+
+        // Fail only during membership insertion, after the user update,
+        // new role creation and old membership deletion have run.
+        self::$db->query(
+            "CREATE TRIGGER auth_fail_role_assignment
+             BEFORE INSERT ON auth_user_role
+             BEGIN
+                 SELECT RAISE(ABORT, 'forced role synchronization failure');
+             END"
+        )->exec();
+
+        $failure = null;
+        try {
+            self::$auth->update($user['id'], [
+                'name' => 'After',
+                'roles' => ['operator'],
+            ]);
+        } catch (\Throwable $exception) {
+            $failure = $exception;
+        } finally {
+            self::$db->query('DROP TRIGGER auth_fail_role_assignment')->exec();
+        }
+
+        $this->assertNotNull($failure, 'A failed role insertion must abort the update');
+        $reloaded = self::$auth->get($user['id']);
+        $this->assertSame('Before', $reloaded['name']);
+        $this->assertSame(['partner'], $reloaded['roles']);
+        $this->assertSame(['partner'], self::$auth->get_roles());
     }
 
     public function testGetUsersByRoleReturnsOnlyUsersWithMatchingRole(): void
@@ -1251,15 +1442,66 @@ class DBAuthSqliteTest extends TestCase
         $actor = self::$auth->register('actor@example.com', 'secret');
         $target = self::$auth->register('target@example.com', 'secret');
         self::$db->insert('managed_items', ['user_id' => $target['id'], 'item_id' => 3]);
+        self::$db->insert('item_users', [
+            'user_id' => $target['id'],
+            'item_id' => 3,
+            'ability' => 'manage',
+        ]);
 
+        // Auth-owned delegation cleanup covers both the subject and target.
         self::$db->insert('user_delegations', [
             'user_id' => $actor['id'],
             'target_user_id' => $target['id'],
             'ability' => 'manage',
         ]);
+        self::$db->insert('user_delegations', [
+            'user_id' => $target['id'],
+            'target_user_id' => $actor['id'],
+            'ability' => 'view',
+        ]);
+
         self::$auth->delete($target['id']);
         $this->assertSame(0, self::$db->count('user_delegations', []));
         $this->assertSame(1, self::$db->count('managed_items', []));
+        $this->assertSame(1, self::$db->count('item_users', []));
+    }
+
+    public function testUserDeletionDoesNotCleanUnownedRelationsEvenWhenTargetIsUser(): void
+    {
+        $auth = new DBAuth(self::$db, [
+            'table' => 'auth_user',
+            'credentials_table' => 'auth_credentials',
+            'created' => 'created',
+            'roles_table' => 'auth_role',
+            'user_roles_table' => 'auth_user_role',
+            'relations' => [
+                'user' => [
+                    'table' => 'user_delegations',
+                    'subject_key' => 'user_id',
+                    'target_key' => 'target_user_id',
+                    'ability_key' => 'ability',
+                    'target_is_user' => true,
+                    // No auth_owned flag: application remains responsible.
+                ],
+            ],
+        ]);
+
+        $actor = $auth->register('actor@example.com', 'secret');
+        $target = $auth->register('target@example.com', 'secret');
+        self::$db->insert('user_delegations', [
+            'user_id' => $actor['id'],
+            'target_user_id' => $target['id'],
+            'ability' => 'manage',
+        ]);
+        self::$db->insert('user_delegations', [
+            'user_id' => $target['id'],
+            'target_user_id' => $actor['id'],
+            'ability' => 'view',
+        ]);
+
+        $this->assertTrue($auth->delete($target['id']));
+        $this->assertSame(2, self::$db->count('user_delegations', []));
+        $this->assertFalse($auth->get_credential('local', 'target@example.com'));
     }
 
     public function testDbAuthSessionContextReloadsApplicationAssignments(): void

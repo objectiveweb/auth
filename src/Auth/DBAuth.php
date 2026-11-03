@@ -364,9 +364,23 @@ class DBAuth extends \Objectiveweb\Auth
     public function passwd($user_id, $password, $key = 'id')
     {
         $column = $this->params[$key] ?? $key;
+        $payload = [$this->params['password'] => self::hash($password)];
+
+        // Changing a password must also revoke outstanding reset links.
+        // Commit all fields in one UPDATE so a concurrent token redemption
+        // cannot later overwrite the newly chosen password.
+        $tokenField = $this->params['token'];
+        if (is_string($tokenField) && $tokenField !== '') {
+            $payload[$tokenField] = null;
+            $expiresField = $this->params['token_expires_field'];
+            if (is_string($expiresField) && $expiresField !== '') {
+                $payload[$expiresField] = null;
+            }
+        }
+
         $updated = $this->userTable->update(
             [$column => $user_id],
-            [$this->params['password'] => self::hash($password)]
+            $payload
         )['updated'];
 
         if ($updated !== 1) {
@@ -458,21 +472,24 @@ class DBAuth extends \Objectiveweb\Auth
             throw new \InvalidArgumentException('Role sync requested but role tables are disabled');
         }
 
-        if (!empty($data)) {
-            foreach ($data as $k => $v) {
-                if (is_array($v)) {
-                    $data[$k] = json_encode($v);
+        // User fields, role definitions and memberships must commit or roll back together.
+        $this->db->transaction(function () use ($column, $user_id, $key, $data, $syncRoles, $roles): void {
+            if (!empty($data)) {
+                foreach ($data as $k => $v) {
+                    if (is_array($v)) {
+                        $data[$k] = json_encode($v);
+                    }
                 }
+
+                $this->userTable->update([$column => $user_id], $data);
             }
 
-            $this->userTable->update([$column => $user_id], $data);
-        }
-
-        if ($syncRoles) {
-            $target = $this->get($user_id, $key);
-            $this->resolveRoleIds($roles);
-            $this->syncUserRoles($target[$this->params['id']], $roles);
-        }
+            if ($syncRoles) {
+                $target = $this->get($user_id, $key);
+                $this->resolveRoleIds($roles);
+                $this->syncUserRoles($target[$this->params['id']], $roles);
+            }
+        });
     }
 
     public function delete($user_id)
@@ -503,7 +520,11 @@ class DBAuth extends \Objectiveweb\Auth
                 );
             }
             foreach ((array) $this->params['relations'] as $relation) {
-                if (!is_array($relation) || empty($relation['table'])) {
+                // A relation used for authorization is not necessarily owned by Auth.
+                // Only explicitly Auth-owned relation tables may be cleaned up here.
+                if (!is_array($relation)
+                    || ($relation['auth_owned'] ?? false) !== true
+                    || empty($relation['table'])) {
                     continue;
                 }
                 if (!empty($relation['subject_key'])) {

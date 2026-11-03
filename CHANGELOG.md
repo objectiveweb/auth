@@ -25,20 +25,23 @@ All notable changes to `objectiveweb/auth` are documented here. This project fol
 - Local identifiers are represented as credentials (`provider = local`, `uid`); the user table no longer contains the legacy `username` identity column by default.
 - Password login failures return the same `AuthException` HTTP 401 for unknown identifiers, bad passwords and suspended accounts.
 - Password reset tokens are cryptographically random, stored only as SHA-256 digests, expire and are consumed atomically; previously issued plaintext legacy tokens do **not** carry forward.
-- Session IDs regenerate upon authentication, protected requests can revalidate account status and roles, and public user payloads are sanitized.
+- Session IDs regenerate upon authentication; `user_can()` revalidates account status and roles on every call so deleted/suspended accounts and revoked roles cannot retain access through stale sessions. Public user payloads are sanitized.
 - User-facing password changes require the existing password, a session-bound `X-CSRF-Token`, and a JSON request; public registration is restricted to local credentials and safe profile fields.
 - OAuth callbacks require a **configured, trusted `redirectUri`** (HTTPS, or explicitly configured HTTP loopback for local development), no longer inferred from Host/proxy request headers.
 - OAuth provider-resource-owner display names, emails and avatars are optional hints with safe fallbacks; matching email addresses do **not** link accounts.
-- User-managed application associations (`managed_relations`) now belong to application services. Use `user_context_callback` to expose current assignments to the authenticated session.
+- `BasicAuth::update_credential()` now preserves an existing provider profile when given `null`, matching `DBAuth` and preventing password login from erasing metadata.
+- User-managed application associations (`managed_relations`) now belong to application services. Use `user_context_callback` to expose current assignments to the authenticated session. User deletion cleans only explicitly `auth_owned` authorization relation tables; application-owned relation tables are never implicitly modified.
 - Project testing/release verification moved from Travis to GitHub Actions; Composer metadata and support URL updated.
 
 ### Security fixes
 
 - Prevent account enumeration through password-login errors and anonymous password-recovery responses.
+- Allow anonymous password recovery only through independently verified credential channels (including local), preventing reset delivery to unverified emails/phone numbers; preserve generic responses and trusted administrator invitation/reset workflows.
 - Consume password reset and credential-verification tokens at most once; separate proof for each provider credential.
+- Revoke outstanding password-reset tokens and expirations whenever a user password is changed, atomically with the password hash update on DBAuth.
 - Prevent OAuth login CSRF, state replay, cross-provider state confusion, unconsented linking, email-based account takeover and cross-account credential reassignment.
 - Restrict logout redirects to safe same-origin absolute paths and reject attacker-controlled OAuth callback URLs.
-- Enforce management CSRF checks, prevent removal of the last active admin and protect the caller from self-deletion/suspension.
+- Enforce management CSRF checks, prevent removal of the last active admin and protect the caller from self-deletion/suspension. Reject unknown DELETE subresources with 404 instead of accidentally deleting the user.
 - Avoid returning passwords, reset tokens or other internal secrets in normal user/session/management payloads.
 
 ### Removed / incompatible

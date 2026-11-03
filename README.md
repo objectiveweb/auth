@@ -108,7 +108,7 @@ These options come from both the shared `Auth` contract and `DBAuth`. Set only t
 | `credentials_table` | `user_credentials` | Logical provider-credential table |
 | `credentials_last_login` / `credentials_created` | `last_login` / `created` | Credential timestamp columns; `null` disables updates |
 | `login_providers` | `['local', 'email']` | Ordered provider identities considered for password login |
-| `recovery_providers` | `['local', 'email', 'phone']` | Provider identities checked for anonymous recovery |
+| `recovery_providers` | `['local', 'email', 'phone']` | Ordered recovery channels; only credentials with `verified_at` are eligible |
 | `token` | `null` | User-table reset-token field; use `'token'` to enable |
 | `token_expires_field` / `token_ttl` | `token_expires_at` / `3600` | Reset-token expiry column and lifetime in seconds |
 | `disabled_at` | `null` | Nullable suspension column; use `'disabled_at'` to enable lifecycle checks |
@@ -224,6 +224,8 @@ complete email verification before treating an email as verified. Explicit
 provider registration using `DBAuth::register()` is reserved for trusted
 application code after authenticating the provider's identity.
 
+**OAuth subject matching:** The bundled MySQL 8 migration uses the case-sensitive, `NO PAD` `utf8mb4_0900_bin` collation for both `user_credentials.uid` and `provider`. OAuth subject IDs must match exactly, including case and trailing spaces. Custom schemas must enforce equivalent identity semantics. Editing this migration does **not** update tables already created by Phinx; if you've previously run it, migrate or recreate the credential table before deploying.
+
 #### Users
 
 `register()` creates the user and its initial credential transactionally. It returns a **sanitized** user. `get()` returns the provider's **raw** user record, including sensitive fields; sanitize it before exposing it to clients.
@@ -289,7 +291,7 @@ $auth->rename_credential($userId, 'phone', '+5511999999999', 'phone', '+55118888
 $auth->delete_credential($userId, 'phone', '+5511888888888');
 ```
 
-`create_credential()` rejects duplicates; `update_credential()` inserts or updates a provider identity and updates its last-login field when configured. `delete_credential()` refuses to remove the user's last credential. Treat raw provider profiles as potentially sensitive; send normalized/sanitized credentials to clients.
+`create_credential()` rejects duplicates; `update_credential()` inserts or updates a provider identity and updates its last-login field when configured. Passing `null` as the profile **preserves existing provider metadata** (including during password login) in both `DBAuth` and `BasicAuth`; pass a non-null profile to replace it. `delete_credential()` refuses to remove the user's last credential. Treat raw provider profiles as potentially sensitive; send normalized/sanitized credentials to clients.
 
 ##### Independent credential verification
 
@@ -356,6 +358,8 @@ $auth->update($admin['id'], ['roles' => ['admin', 'editor']]);
 $auth->user_can('admin'); // bool
 ```
 
+`user_can()` **revalidates the logged-in principal on every permission check**, including role, resource and delegation checks. Role grants/revocations take effect immediately on the next call; suspended or deleted users are logged out and denied (`false`, or `[]` for a resource-list query). This requires a backend read for every call, so cache permission decisions only within a deliberately controlled authorization boundary, never across requests.
+
 Direct `DBAuth::register()` / `update()` can create role definitions when syncing names that do not exist. The **admin UserController API** is intentionally stricter and accepts only *existing* role names: seed the allowed roles before using its role-management endpoints. The public registration controller always ignores role grants, regardless of `register_allow_grants`. Both `roles_table` and `user_roles_table` must be disabled together if roles are not wanted.
 
 #### Relations and authorization
@@ -370,7 +374,8 @@ $auth = new DBAuth($db, [
             'subject_key' => 'user_id',
             'target_key' => 'target_user_id',
             'ability_key' => 'ability',
-            'target_is_user' => true, // Also clean target-user rows on deletion
+            'target_is_user' => true, // Also clean target-user rows when Auth owns this relation
+            'auth_owned' => true,     // Explicit opt-in: Auth may clean this table on user deletion
         ],
         'item' => [
             'table' => 'item_users',  // Application-owned relation table
@@ -389,6 +394,8 @@ $itemIds = $auth->user_can('manage', 'item'); // Accessible item IDs
 ```
 
 Each permission relation requires `table`, `subject_key`, `target_key` and either `ability_key` or `role_key` together with `role_abilities` (a role-to-ability map). `eager` may be `true` or a `DB::select()` options array such as `['order' => 'item_id DESC']`. Eager relation rows remain scoped to the current subject user.
+
+**Deletion ownership is opt-in.** `DBAuth::delete()` removes rows from a configured relation table only when `auth_owned => true` is explicitly set (for example, the bundled `delegations` table). When enabled, it cleans rows with the deleted user as `subject_key`, plus `target_key` when `target_is_user => true`. Merely configuring a relation for authorization—even with `target_is_user => true`—does not transfer ownership of application tables to Auth. Never set `auth_owned` on application-owned association tables; use the application's own deletion logic, foreign-key cascades or `deletion_guard_callback` instead.
 
 #### Application-owned user context
 
@@ -420,7 +427,7 @@ $venueIds = $auth->user()['context']['venues'];
 
 Session context is not implicitly added to `get()` or `query()` results; those remain user-record APIs. `AuthController::index()` returns the authenticated session principal, including its context. If the callback is omitted, Auth does not add a context field.
 
-**Migration from `managed_relations` (breaking change for 0.2.0):** remove that parameter; move `get_managed_relations()` and `sync_managed_relations()` callers into your application's user service; expose venue assignments through application-specific endpoints rather than generic `UserController` create/update. The generic Auth controller now rejects `managed_relations` request fields instead of silently losing assignments, and it no longer includes them in user-detail responses. `DBAuth::delete()` no longer cleans application association tables: arrange cleanup using application transactions/foreign-key cascades and, where necessary, `deletion_guard_callback`.
+**Migration from `managed_relations` (breaking change for 0.2.0):** remove that parameter; move `get_managed_relations()` and `sync_managed_relations()` callers into your application's user service; expose venue assignments through application-specific endpoints rather than generic `UserController` create/update. The generic Auth controller now rejects `managed_relations` request fields instead of silently losing assignments, and it no longer includes them in user-detail responses. `DBAuth::delete()` cleans only explicitly `auth_owned` relations and never automatically cleans application association tables: arrange their cleanup using application transactions/foreign-key cascades and, where necessary, `deletion_guard_callback`.
 
 ### `BasicAuth`
 
@@ -483,9 +490,13 @@ $token = $auth->update_token($credential['user_id']);
 $auth->passwd_reset($token, 'new-password');
 ```
 
+Direct password changes through `passwd($userId, $newPassword)` (including authenticated `AuthController::postPassword()`) revoke any outstanding user password-reset token and its expiry. `DBAuth` changes these fields in one SQL `UPDATE` so a previously issued reset link cannot overwrite the new password. This is separate from credential-verification tokens.
+
 `DBAuth` stores only a SHA-256 digest of the high-entropy reset token and looks it up through the indexed token column. The plaintext token is returned only once for delivery.
 
-Anonymous password-recovery requests intentionally return the same empty success payload whether or not the supplied UID exists. Recovery callbacks are delivery-only: their return value is not exposed, and delivery failures do not change the anonymous response. **There is no built-in rate limiting in v0.2.0.** Applications must enforce external rate limits at their web server, reverse proxy, gateway, or middleware for login, public registration, recovery, reset-token redemption, and credential verification. Future non-database throttling is tracked in [issue #2](https://github.com/objectiveweb/auth/issues/2).
+Anonymous password recovery uses **only independently verified** credentials (`verified_at` is set), including for the default `local`, `email` and `phone` providers. An unverified contact method cannot request an account-wide reset token; if multiple configured providers have the same UID, the first **verified** credential is selected. Password login alone does not verify control of the recovery address. Newly registered local credentials therefore cannot use anonymous recovery until their address is verified through `issue_credential_token()` / `postVerifyCredential()` or other trusted out-of-band proof. Legacy local credentials imported with `verified_at = NULL` likewise cannot recover anonymously; do not bulk-mark them verified without evidence of ownership. An admin-initiated `Auth::invite()` or reset remains a separate trusted operation and must be delivered only via an independently trusted channel.
+
+Anonymous password-recovery requests intentionally return the same empty success payload whether or not the supplied UID exists or is verified. Recovery callbacks are delivery-only: their return value is not exposed, and delivery failures do not change the anonymous response. **There is no built-in rate limiting in v0.2.0.** Applications must enforce external rate limits at their web server, reverse proxy, gateway, or middleware for login, public registration, recovery, reset-token redemption, and credential verification. Future non-database throttling is tracked in [issue #2](https://github.com/objectiveweb/auth/issues/2).
 
 ### Database CI coverage
 

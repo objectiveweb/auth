@@ -56,6 +56,21 @@ foreach ($expectedColumns as $table => $columns) {
     $assert($engineStmt->fetchColumn() === 'InnoDB', "Expected InnoDB table {$table}");
 }
 
+// OAuth provider names and subject IDs must use exact comparisons on MySQL,
+// regardless of the database/table's default case-insensitive collation.
+$collationStmt = $pdo->prepare(
+    'SELECT COLUMN_NAME, COLLATION_NAME FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = :db AND TABLE_NAME = :table'
+);
+$collationStmt->execute(['db' => $database, 'table' => 'user_credentials']);
+$collations = $collationStmt->fetchAll(PDO::FETCH_KEY_PAIR);
+foreach (['uid', 'provider'] as $column) {
+    $assert(
+        ($collations[$column] ?? null) === 'utf8mb4_0900_bin',
+        "MySQL credential identity column {$column} must use utf8mb4_0900_bin"
+    );
+}
+
 // Check indexes by indexed column, including whether they enforce uniqueness.
 $indexStmt = $pdo->prepare(
     'SELECT INDEX_NAME, COLUMN_NAME, NON_UNIQUE, SEQ_IN_INDEX
