@@ -4,10 +4,16 @@ on:
   push:
     branches:
       - master
+  pull_request:
+    branches:
+      - master
   workflow_dispatch:
 
 jobs:
   test:
+    # The regular CI workflow already tests the full PHP matrix on PRs.
+    # This release workflow runs the matrix after merge or when dispatched.
+    if: github.event_name != 'pull_request'
     name: PHP ${{ matrix.php }}
     runs-on: ubuntu-latest
     strategy:
@@ -58,4 +64,46 @@ jobs:
         run: composer validate --strict
 
       - name: Verify production dependencies
-        run: composer install --no-dev --prefer-dist --no-interaction --no-progress
+        run: |
+          composer install --no-dev --prefer-dist --no-interaction --no-progress --optimize-autoloader
+          composer check-platform-reqs --no-dev
+
+      - name: Smoke-test production autoload and authentication
+        run: php test/verify_production_install.php vendor/autoload.php
+
+      - name: Install as a separate production consumer
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/auth-consumer"
+          # This prerelease is not yet published on Packagist. Use a copied
+          # Composer path package (not a symlink) pinned to the candidate
+          # version, as a real consumer would install it into vendor/.
+          php -r '
+            $manifest = [
+              "name" => "objectiveweb/auth-production-consumer",
+              "description" => "Isolated no-dev install verification",
+              "require" => [
+                "php" => ">=8.2",
+                "objectiveweb/auth" => "^0.2",
+              ],
+              "repositories" => [[
+                "type" => "path",
+                "url" => getenv("GITHUB_WORKSPACE"),
+                "options" => [
+                  "symlink" => false,
+                  "versions" => ["objectiveweb/auth" => "0.2.0"],
+                ],
+              ]],
+            ];
+            file_put_contents(
+              getenv("RUNNER_TEMP") . "/auth-consumer/composer.json",
+              json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n"
+            );
+          '
+          cd "$RUNNER_TEMP/auth-consumer"
+          composer install --no-dev --prefer-dist --no-interaction --no-progress --optimize-autoloader
+          composer check-platform-reqs --no-dev
+          test -f vendor/objectiveweb/auth/src/Auth.php
+          php "$GITHUB_WORKSPACE/test/verify_production_install.php" "$PWD/vendor/autoload.php"
+

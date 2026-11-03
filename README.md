@@ -2,6 +2,15 @@
 
 Authentication library with pluggable providers.
 
+> **v0.2.0 is a breaking upgrade from 0.1.x.** The old PDO-based `Auth` constructor,
+> user table and controller paths are not compatible. Read the
+> [0.2.0 upgrade guide](docs/UPGRADING-0.2.0.md) before upgrading a live app.
+
+**Release documentation:** [Changelog](CHANGELOG.md) ·
+[Upgrade guide (0.1.x → 0.2.0)](docs/UPGRADING-0.2.0.md) ·
+[0.2.0 release notes and release checklist](docs/RELEASE-0.2.0.md)
+
+
 ## Install
 
 ```bash
@@ -11,6 +20,35 @@ composer require objectiveweb/auth
 This package requires:
 - PHP `>=8.2`
 - `objectiveweb/db`
+
+### Pre-merge production installation check
+
+Every pull request targeting `master` runs the **Production install** job in
+[`release.yml`](.github/workflows/release.yml), using PHP 8.2 (the minimum
+supported version). This job verifies `composer validate --strict`, installs
+the library's runtime dependencies using `composer install --no-dev`, checks
+platform requirements, and executes
+[`test/verify_production_install.php`](test/verify_production_install.php).
+The smoke test confirms that the public Auth, BasicAuth, DBAuth, controller
+and database classes autoload, and that registration, login and logout work
+without PHPUnit or Phinx installed.
+
+It also installs the unreleased source into a **separate consumer project**
+with a non-symlinked Composer path repository, then repeats the smoke checks
+against that consumer's `vendor/autoload.php`. Until v0.2.0 is published, the
+path package is explicitly assigned the candidate `0.2.0` version; this
+checks real consumer autoloading and `require` dependencies without claiming
+that Packagist already serves the new release. The standard PHP test matrix
+continues running in `ci.yml`, while `release.yml` runs its additional
+full matrix only after merging or on manual dispatch.
+
+For a local no-dev check:
+
+```sh
+composer install --no-dev --prefer-dist --optimize-autoloader
+composer check-platform-reqs --no-dev
+php test/verify_production_install.php vendor/autoload.php
+```
 
 ## Providers
 
@@ -127,6 +165,8 @@ CREATE TABLE user_credentials (
     user_id INTEGER NOT NULL,
     profile TEXT,
     token VARCHAR(255),
+    token_expires_at DATETIME,
+    verified_at DATETIME,
     last_login DATETIME,
     created DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (uid, provider),
