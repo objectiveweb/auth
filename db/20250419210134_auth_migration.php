@@ -49,8 +49,8 @@ class AuthMigration extends AbstractMigration
             'primary_key' => ['uid', 'provider']
         ]);
         $user_credentials
-            ->addColumn('uid', 'string', ['limit' => 255])
-            ->addColumn('provider', 'string', ['limit' => 32])
+            ->addColumn('uid', 'string', ['limit' => 255, 'null' => false])
+            ->addColumn('provider', 'string', ['limit' => 32, 'null' => false])
             ->addColumn('user_id', 'integer', ['signed' => false])
             ->addColumn('profile', 'text', ['null'=> true])
             ->addColumn('token', 'string', ['limit' => 255, 'null' => true])
