@@ -735,6 +735,97 @@ class DBAuth extends \Objectiveweb\Auth
     }
 
     /**
+     * Atomically attach independently proven OAuth identity to an existing
+     * account. The verified flag is written in the same INSERT/UPDATE as the
+     * identity, so a failed write cannot leave a newly linked credential
+     * unverified. Existing credentials may be upgraded only by their owner.
+     */
+    public function link_verified_credential(
+        int|string $userid,
+        string $provider,
+        string $uid,
+        mixed $profile = null
+    ): void {
+        if (trim($provider) === '' || trim($uid) === '' || $provider === 'local') {
+            throw new UserException('An external provider and uid are required', 400);
+        }
+
+        $profileValue = is_array($profile) ? json_encode($profile) : $profile;
+        $this->db->transaction(function (DB $db) use ($userid, $provider, $uid, $profileValue): void {
+            // Serialize same-account linking and deletion with the stable user
+            // row. This also ensures a deleted/suspended principal is refused.
+            $idField = (string) $this->params['id'];
+            $db->update(
+                (string) $this->params['table'],
+                [$idField => $userid],
+                [$idField => $userid]
+            );
+            $user = $this->get($userid);
+            if (!$this->is_active($user)) {
+                throw new UserException('Account suspended', 403);
+            }
+
+            $existing = $this->get_credential($provider, $uid);
+            if ($existing && (string) $existing['user_id'] !== (string) $userid) {
+                throw new UserException('Credential already registered', 409);
+            }
+
+            $now = date('Y-m-d H:i:s');
+            $payload = [
+                'verified_at' => ($existing['verified_at'] ?? null) ?: $now,
+                'token' => null,
+                'token_expires_at' => null,
+            ];
+            if ($profileValue !== null) {
+                $payload['profile'] = $profileValue;
+            }
+            if (!empty($this->params['credentials_last_login'])) {
+                $payload[$this->params['credentials_last_login']] = $now;
+            }
+
+            if ($existing) {
+                // Include the owner in the predicate. A concurrent reassignment
+                // must never cause verification of someone else's identity.
+                $updated = $db->update(
+                    (string) $this->params['credentials_table'],
+                    $payload,
+                    ['user_id' => $userid, 'provider' => $provider, 'uid' => $uid]
+                );
+                if ($updated !== 1) {
+                    // MySQL may report zero affected rows on an identical
+                    // verified credential update. Confirm its current state.
+                    $current = $this->get_credential($provider, $uid);
+                    if (!$current
+                        || (string) $current['user_id'] !== (string) $userid
+                        || empty($current['verified_at'])
+                        || !empty($current['token'])
+                        || !empty($current['token_expires_at'])
+                        || ($profileValue !== null
+                            && $current['profile'] !== (
+                                is_string($profileValue) ? (
+                                    json_decode($profileValue, true) ?? $profileValue
+                                ) : $profileValue
+                            ))) {
+                        throw new UserException('Credential changed while linking', 409);
+                    }
+                }
+                return;
+            }
+
+            $payload['user_id'] = $userid;
+            $payload['provider'] = $provider;
+            $payload['uid'] = $uid;
+            $payload['profile'] = $profileValue;
+            if (!empty($this->params['credentials_created'])) {
+                $payload[$this->params['credentials_created']] = $now;
+            }
+            // The unique (provider, uid) key prevents competing link requests
+            // from attaching an identity to two different user accounts.
+            $db->insert((string) $this->params['credentials_table'], $payload);
+        });
+    }
+
+    /**
      * Tokens are per credential, never per user. Only trusted service code
      * should issue them and deliver them through the credential's verified
      * address/channel; never return this secret from a public HTTP endpoint.
