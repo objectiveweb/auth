@@ -223,10 +223,9 @@ class OAuthController extends AuthController
         if ($existing) {
             throw new UserException('OAuth identity is already associated with an account', 409);
         }
-        $this->auth->update_credential(
+        $this->auth->link_verified_credential(
             $userId, $pending['provider'], $pending['uid'], $pending['profile']
         );
-        $this->auth->mark_credential_verified($userId, $pending['provider'], $pending['uid']);
         $this->auth->audit('credential.linked', $userId, ['provider' => $pending['provider']]);
         return ['status' => 'linked', 'user' => $this->auth->establish_session($this->auth->get($userId))];
     }
@@ -417,8 +416,7 @@ class OAuthController extends AuthController
             if ($credential && $credential['user_id'] != $userId) {
                 throw new UserException('Credential belongs to another account', 409);
             }
-            $this->auth->update_credential($userId, $provider, $uid, $profile);
-            $this->auth->mark_credential_verified($userId, $provider, $uid);
+            $this->auth->link_verified_credential($userId, $provider, $uid, $profile);
             $this->auth->audit('credential.linked', $userId, ['provider' => $provider]);
             return $this->auth->establish_session($this->auth->get($userId));
         }
