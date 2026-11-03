@@ -278,7 +278,7 @@ class AuthController
         }
     }
 
-    private function assertCanRegister(): void
+    protected function assertCanRegister(): void
     {
         $required = $this->auth->params['register_scope'];
         $required = is_array($required) ? $required : [$required];

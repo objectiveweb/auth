@@ -102,39 +102,405 @@ class OAuthControllerTest extends TestCase
         );
     }
 
-    public function testOAuthCallbackDoesNotLinkAccountByEmail(): void
+    public function testFirstTimeOAuthOffersAccountChoiceWithoutCreatingUser(): void
     {
         $auth = new OAuthTrackingBasicAuth([], ['token' => 'token']);
         $existing = $auth->register('linked@example.com', 'secret', ['provider' => 'email']);
-
         OAuthTestProvider::$resourceOwner = $this->resourceOwner(
             'provider-user-id', 'linked@example.com'
         );
-        $controller = new OAuthTestController($auth, [
-            'test' => [
-                'clientId' => 'client-id',
-                'clientSecret' => 'client-secret',
-                'redirectUri' => 'https://app.example/oauth/test',
-            ],
-        ]);
+        $controller = $this->testController($auth);
         $controller->get('test', []);
         $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
 
         $this->assertArrayNotHasKey('test', $_SESSION['oauth2flows']);
-        $this->assertSame(
-            $_SESSION['oauth2flows']['test']['code_verifier'] ?? null,
-            null
-        );
-        $this->assertNotEmpty(OAuthTestProvider::$lastTokenOptions['code_verifier']);
-        $this->assertSame('/', $controller->redirectedTo);
-        $this->assertTrue($auth->sessionRegenerated);
-        $this->assertNotSame($existing['id'], $auth->user()['id']);
+        $this->assertSame('/?oauth=choose-account', $controller->redirectedTo);
+        $this->assertFalse($auth->check());
+        $this->assertFalse($auth->get_credential('test', 'provider-user-id'));
         $this->assertSame($existing['id'], $auth->get_credential('email', 'linked@example.com')['user_id']);
 
-        $credential = $auth->get_credential('test', 'provider-user-id');
-        $this->assertSame($auth->user()['id'], $credential['user_id']);
-        $this->assertNotEmpty($credential['verified_at']);
-        $this->assertFalse($auth->get_credential('email', 'provider-user-id'));
+        $choice = $controller->getPendingAccount();
+        $this->assertSame('account_choice_required', $choice['status']);
+        $this->assertSame(['create', 'existing'], $choice['choices']);
+        $this->assertSame('test', $choice['provider']);
+        $this->assertSame('linked@example.com', $choice['email_hint']);
+        $this->assertNotEmpty($choice['_csrf']);
+        $this->assertArrayNotHasKey('uid', $choice);
+        $this->assertArrayNotHasKey('profile', $choice);
+    }
+
+    public function testMinimalLeagueResourceOwnerDoesNotRequireOptionalMethods(): void
+    {
+        $auth = new OAuthTrackingBasicAuth([], ['token' => 'token']);
+        OAuthTestProvider::$resourceOwner = new class {
+            public function getId(): string { return 'minimal-provider-subject'; }
+            public function toArray(): array { return ['id' => 'minimal-provider-subject']; }
+        };
+
+        $controller = $this->testController($auth);
+        $controller->get('test', []);
+        $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+
+        $pending = $controller->getPendingAccount();
+        $this->assertSame('account_choice_required', $pending['status']);
+        $this->assertNull($pending['name']);
+        $this->assertNull($pending['image'] ?? null);
+        $this->assertNull($pending['email_hint']);
+        $this->assertFalse($auth->get_credential('test', 'minimal-provider-subject'));
+
+        $this->withLinkHeaders($auth);
+        $created = $controller->postCreateAccount();
+        $this->assertSame('created', $created['status']);
+        $this->assertSame(
+            $created['user']['id'],
+            $auth->get_credential('test', 'minimal-provider-subject')['user_id']
+        );
+        $this->assertNotEmpty($auth->get_credential('test', 'minimal-provider-subject')['verified_at']);
+    }
+
+    public function testLeagueProfileArraySuppliesSafeNameAvatarAndEmailHints(): void
+    {
+        $auth = new OAuthTrackingBasicAuth([], ['token' => 'token']);
+        OAuthTestProvider::$resourceOwner = new class {
+            public function getId(): int { return 92735; }
+            public function toArray(): array
+            {
+                return [
+                    'name' => '  Profile Name  ',
+                    'avatar_url' => 'https://example.com/avatar.png',
+                    'email' => 'profile@example.com',
+                ];
+            }
+        };
+
+        $controller = $this->testController($auth);
+        $controller->get('test', []);
+        $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+        $pending = $controller->getPendingAccount();
+        $this->assertSame('Profile Name', $pending['name']);
+        $this->assertSame('profile@example.com', $pending['email_hint']);
+        $this->assertSame('https://example.com/avatar.png', $_SESSION['oauth2pending']['image']);
+        $this->assertArrayNotHasKey('uid', $pending);
+
+        $this->withLinkHeaders($auth);
+        $result = $controller->postCreateAccount();
+        $this->assertSame('Profile Name', $result['user']['name']);
+        $this->assertSame('https://example.com/avatar.png', $result['user']['image']);
+        $this->assertNotFalse($auth->get_credential('test', '92735'));
+    }
+
+    public function testNestedPictureAndSplitNameProfileFallbacks(): void
+    {
+        $auth = new BasicAuth([], ['token' => 'token']);
+        OAuthTestProvider::$resourceOwner = new class {
+            public function getId(): string { return 'nested-fields'; }
+            public function toArray(): array
+            {
+                return [
+                    'given_name' => ' Alice ',
+                    'family_name' => 'Smith',
+                    'picture' => ['data' => ['url' => 'https://cdn.example.com/photo.jpg']],
+                    'email_address' => 'alice@example.com',
+                ];
+            }
+        };
+        $controller = $this->testController($auth);
+        $controller->get('test', []);
+        $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+
+        $pending = $controller->getPendingAccount();
+        $this->assertSame('Alice Smith', $pending['name']);
+        $this->assertSame('alice@example.com', $pending['email_hint']);
+        $this->assertSame('https://cdn.example.com/photo.jpg', $_SESSION['oauth2pending']['image']);
+    }
+
+    public function testMalformedOrThrowingOptionalGettersSafelyFallBackToProfile(): void
+    {
+        $auth = new BasicAuth([], ['token' => 'token']);
+        OAuthTestProvider::$resourceOwner = new class {
+            public function getId(): string { return 'broken-optional-fields'; }
+            public function getName(): string { throw new \RuntimeException('Name unavailable'); }
+            public function getAvatar(): array { return ['unexpected' => 'value']; }
+            public function getPictureUrl(): string { throw new \RuntimeException('Picture unavailable'); }
+            public function getEmail(): array { return ['bad' => 'value']; }
+            public function toArray(): array
+            {
+                return [
+                    'display_name' => '  Resilient User  ',
+                    'picture_url' => 'javascript:alert(1)',
+                    'image_url' => 'https://images.example.com/photo.jpg',
+                    'mail' => ' valid@example.com ',
+                ];
+            }
+        };
+
+        $controller = $this->testController($auth);
+        $controller->get('test', []);
+        $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+
+        $pending = $controller->getPendingAccount();
+        $this->assertSame('Resilient User', $pending['name']);
+        $this->assertSame('valid@example.com', $pending['email_hint']);
+        $this->assertSame('https://images.example.com/photo.jpg', $_SESSION['oauth2pending']['image']);
+    }
+
+    public function testUnsafeAvatarAndInvalidEmailHintsAreIgnored(): void
+    {
+        $auth = new BasicAuth([], ['token' => 'token']);
+        OAuthTestProvider::$resourceOwner = new class {
+            public function getId(): string { return 'unsafe-fields'; }
+            public function toArray(): array
+            {
+                return [
+                    'name' => ['not' => 'text'],
+                    'picture' => 'data:image/svg+xml;base64,PHN2Zz4=',
+                    'avatar_url' => 'javascript:alert(1)',
+                    'email' => 'not-an-email',
+                ];
+            }
+        };
+
+        $controller = $this->testController($auth);
+        $controller->get('test', []);
+        $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+
+        $pending = $controller->getPendingAccount();
+        $this->assertNull($pending['name']);
+        $this->assertNull($pending['email_hint']);
+        $this->assertNull($_SESSION['oauth2pending']['image']);
+    }
+
+    public function testInvalidProviderSubjectTypeIsRejected(): void
+    {
+        $auth = new BasicAuth([], ['token' => 'token']);
+        $controller = $this->testController($auth);
+        $owner = new class {
+            public function getId(): array { return ['not' => 'an id']; }
+            public function toArray(): array { return []; }
+        };
+        $this->expectException(AuthException::class);
+        $this->expectExceptionCode(401);
+        $this->invokeOAuthLogin($controller, 'test', $owner);
+    }
+
+    public function testFirstTimeOAuthCanExplicitlyCreateNewAccount(): void
+    {
+        $auth = new OAuthTrackingBasicAuth([], ['token' => 'token']);
+        $local = $auth->register('matching@example.com', 'old-password');
+        OAuthTestProvider::$resourceOwner = $this->resourceOwner(
+            'new-oauth-subject', 'matching@example.com'
+        );
+        $controller = $this->testController($auth);
+        $controller->get('test', []);
+        $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+
+        $this->withLinkHeaders($auth);
+        $result = $controller->postCreateAccount(['name' => 'New OAuth Account']);
+        $this->assertSame('created', $result['status']);
+        $created = $result['user'];
+        $this->assertNotSame($local['id'], $created['id']);
+        $this->assertSame('New OAuth Account', $created['name']);
+        $this->assertSame($created['id'], $auth->get_credential('test', 'new-oauth-subject')['user_id']);
+        $this->assertNotEmpty($auth->get_credential('test', 'new-oauth-subject')['verified_at']);
+        $this->assertSame($local['id'], $auth->get_credential('local', 'matching@example.com')['user_id']);
+        $this->assertFalse($auth->get_credential('local', 'new-oauth-subject'));
+        $this->assertArrayNotHasKey('oauth2pending', $_SESSION);
+        $this->assertTrue($auth->check());
+    }
+
+    public function testFirstTimeOAuthCanAuthenticateExistingAccountAndLink(): void
+    {
+        $auth = new OAuthTrackingBasicAuth([], ['token' => 'token']);
+        $local = $auth->register('old@example.com', 'local-secret');
+        OAuthTestProvider::$resourceOwner = $this->resourceOwner(
+            'pending-oauth-subject', 'provider-email@example.com'
+        );
+        $controller = $this->testController($auth);
+        $controller->get('test', []);
+        $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+
+        $this->withLinkHeaders($auth);
+        try {
+            $controller->postExistingAccount(['uid' => 'old@example.com', 'password' => 'wrong']);
+            $this->fail('Incorrect local password was accepted');
+        } catch (AuthException $e) {
+            $this->assertSame(401, $e->getCode());
+        }
+        $this->assertFalse($auth->check());
+        $this->assertArrayHasKey('oauth2pending', $_SESSION);
+        $this->assertFalse($auth->get_credential('test', 'pending-oauth-subject'));
+
+        $result = $controller->postExistingAccount([
+            'uid' => 'old@example.com',
+            'password' => 'local-secret',
+        ]);
+        $this->assertSame('linked', $result['status']);
+        $this->assertSame($local['id'], $result['user']['id']);
+        $this->assertSame($local['id'], $auth->get_credential('test', 'pending-oauth-subject')['user_id']);
+        $this->assertNotEmpty($auth->get_credential('test', 'pending-oauth-subject')['verified_at']);
+        $this->assertArrayNotHasKey('oauth2pending', $_SESSION);
+        $this->assertTrue($auth->check());
+    }
+
+
+    public function testPendingAccountCannotBeCreatedWithoutExplicitChoice(): void
+    {
+        $auth = new BasicAuth([], ['token' => 'token']);
+        OAuthTestProvider::$resourceOwner = $this->resourceOwner('new-id');
+        $controller = $this->testController($auth);
+
+        $controller->get('test', []);
+        $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+        $this->assertFalse($auth->get_credential('test', 'new-id'));
+        $this->assertFalse($auth->check());
+
+        $_SERVER['REQUEST_METHOD'] = 'POST';
+        $_SERVER['CONTENT_TYPE'] = 'application/json';
+        try {
+            $controller->postCreateAccount();
+            $this->fail('Creating without CSRF token succeeded');
+        } catch (\Objectiveweb\Auth\UserException $e) {
+            $this->assertSame(403, $e->getCode());
+        }
+        $this->assertFalse($auth->get_credential('test', 'new-id'));
+
+        $this->withLinkHeaders($auth);
+        try {
+            $controller->postCreateAccount(['provider' => 'local']);
+            $this->fail('Provider injection during OAuth account creation succeeded');
+        } catch (\Objectiveweb\Auth\UserException $e) {
+            $this->assertSame(400, $e->getCode());
+        }
+        $this->assertArrayHasKey('oauth2pending', $_SESSION);
+    }
+
+    public function testPendingAccountCreationHonorsRegistrationPolicy(): void
+    {
+        $auth = new BasicAuth([], [
+            'token' => 'token',
+            'register_scope' => \Objectiveweb\Auth::AUTHENTICATED,
+        ]);
+        OAuthTestProvider::$resourceOwner = $this->resourceOwner('restricted-id');
+        $controller = $this->testController($auth);
+        $controller->get('test', []);
+        $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+        $this->withLinkHeaders($auth);
+
+        try {
+            $controller->postCreateAccount();
+            $this->fail('Restricted account creation succeeded');
+        } catch (\Objectiveweb\Auth\AuthException $e) {
+            $this->assertSame(401, $e->getCode());
+        }
+        $this->assertFalse($auth->get_credential('test', 'restricted-id'));
+    }
+
+    public function testPendingAccountExpiresAndIsRemoved(): void
+    {
+        $auth = new BasicAuth([], ['token' => 'token']);
+        OAuthTestProvider::$resourceOwner = $this->resourceOwner('expiring-id');
+        $controller = $this->testController($auth);
+        $controller->get('test', []);
+        $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+        $_SESSION['oauth2pending']['created_at'] = time() - 601;
+
+        try {
+            $controller->getPendingAccount();
+            $this->fail('Expired pending account still available');
+        } catch (\Objectiveweb\Auth\UserException $e) {
+            $this->assertSame(410, $e->getCode());
+        }
+        $this->assertArrayNotHasKey('oauth2pending', $_SESSION);
+        $this->assertFalse($auth->get_credential('test', 'expiring-id'));
+    }
+
+    public function testAccountChoiceCannotBeReplayedOrUsedAfterCancellation(): void
+    {
+        $auth = new BasicAuth([], ['token' => 'token']);
+        OAuthTestProvider::$resourceOwner = $this->resourceOwner('choice-id');
+        $controller = $this->testController($auth);
+        $controller->get('test', []);
+        $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+        $this->withLinkHeaders($auth);
+        $this->assertSame('cancelled', $controller->postCancelPendingAccount()['status']);
+        try {
+            $controller->postCreateAccount();
+            $this->fail('Cancelled account choice still usable');
+        } catch (\Objectiveweb\Auth\UserException $e) {
+            $this->assertSame(410, $e->getCode());
+        }
+
+        $controller->get('test', []);
+        $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+        $result = $controller->postCreateAccount();
+        $this->assertSame('created', $result['status']);
+        $auth->logout();
+        try {
+            $controller->postExistingAccount(['uid' => 'other@example.com', 'password' => 'secret']);
+            $this->fail('A consumed OAuth proof was reused');
+        } catch (\Objectiveweb\Auth\UserException $e) {
+            $this->assertSame(410, $e->getCode());
+        }
+    }
+
+    public function testAccountChoiceRejectsPreviouslyLinkedProviderIdentity(): void
+    {
+        $auth = new BasicAuth([], ['token' => 'token']);
+        $owner = $auth->register('existing@example.com', 'password');
+        OAuthTestProvider::$resourceOwner = $this->resourceOwner('race-id');
+        $controller = $this->testController($auth);
+        $controller->get('test', []);
+        $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+        // A different request associates the identity while the choice is pending.
+        $auth->create_credential($owner['id'], 'test', 'race-id');
+        $auth->mark_credential_verified($owner['id'], 'test', 'race-id');
+        $this->withLinkHeaders($auth);
+        try {
+            $controller->postCreateAccount();
+            $this->fail('Duplicate OAuth identity was accepted');
+        } catch (\Objectiveweb\Auth\UserException $e) {
+            $this->assertSame(409, $e->getCode());
+        }
+        $this->assertSame($owner['id'], $auth->get_credential('test', 'race-id')['user_id']);
+        $this->assertArrayNotHasKey('oauth2pending', $_SESSION);
+    }
+
+    public function testExistingAccountChoiceRejectsInvalidPayloadAndUntrustedMethods(): void
+    {
+        $auth = new BasicAuth([], ['token' => 'token']);
+        $auth->register('existing@example.com', 'secret');
+        OAuthTestProvider::$resourceOwner = $this->resourceOwner('pending-id');
+        $controller = $this->testController($auth);
+        $controller->get('test', []);
+        $controller->get('test', ['code' => 'oauth-code', 'state' => 'test-oauth-state']);
+        $this->withLinkHeaders($auth);
+        $_SERVER['REQUEST_METHOD'] = 'GET';
+        try {
+            $controller->postExistingAccount(['uid' => 'existing@example.com', 'password' => 'secret']);
+            $this->fail('GET linked a provider credential');
+        } catch (\Objectiveweb\Auth\UserException $e) {
+            $this->assertSame(405, $e->getCode());
+        }
+        $_SERVER['REQUEST_METHOD'] = 'POST';
+        try {
+            $controller->postExistingAccount([
+                'uid' => 'existing@example.com',
+                'password' => 'secret',
+                'provider' => 'test',
+            ]);
+            $this->fail('Provider injection accepted in existing-account choice');
+        } catch (\Objectiveweb\Auth\UserException $e) {
+            $this->assertSame(400, $e->getCode());
+        }
+        $this->assertFalse($auth->get_credential('test', 'pending-id'));
+        $this->assertArrayHasKey('oauth2pending', $_SESSION);
+    }
+
+    public function testPendingChoiceRedirectRejectsExternalUrl(): void
+    {
+        $this->expectException(\Objectiveweb\Auth\UserException::class);
+        $this->expectExceptionCode(400);
+        $this->testController(new BasicAuth(), '//attacker.example/receive');
     }
 
     public function testUnverifiedOAuthCredentialCannotBeUsedToLogInAnotherAccount(): void
@@ -537,6 +903,17 @@ class OAuthControllerTest extends TestCase
         $this->assertTrue($auth->check());
         $this->assertSame($user['id'], $logged['id']);
         $this->assertSame($user['id'], $auth->user()['id']);
+    }
+
+    private function testController(BasicAuth $auth, string $pendingRedirect = '/?oauth=choose-account'): OAuthTestController
+    {
+        return new OAuthTestController($auth, [
+            'test' => [
+                'clientId' => 'client-id',
+                'clientSecret' => 'client-secret',
+                'redirectUri' => 'https://app.example/oauth/test',
+            ],
+        ], $pendingRedirect);
     }
 
     private function withLinkHeaders(BasicAuth $auth): void
