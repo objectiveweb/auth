@@ -253,6 +253,24 @@ $auth->passwd($userId, 'new-password');
 $credentials = $auth->get_credentials($userId);
 ```
 
+## OAuth controller
+
+Configure OAuth providers by provider name. Set an explicit `redirectUri` in production so callback URLs do not depend on request/proxy headers:
+
+```php
+use Objectiveweb\Auth\Controller\OAuthController;
+
+$oauth = new OAuthController($auth, [
+    'google' => [
+        'clientId' => getenv('GOOGLE_CLIENT_ID'),
+        'clientSecret' => getenv('GOOGLE_CLIENT_SECRET'),
+        'redirectUri' => 'https://app.example/auth/oauth/google',
+    ],
+]);
+```
+
+If `redirectUri` is omitted, the controller derives it from the current request for development/legacy setups. OAuth state is single-use and is cleared when the callback is consumed.
+
 ## User-management API
 
 Register `Objectiveweb\Auth\Controller\UserController` at an application-owned
