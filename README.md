@@ -467,7 +467,32 @@ If `redirectUri` is omitted, the controller derives it from the current request 
 
 OAuth authorization includes a fresh **PKCE S256** challenge and stores a per-provider authorization flow in the PHP session (`oauth2flows`). The callback requires the matching provider's state, the original initiating session principal, and a state created within the past 10 minutes. The state is consumed before exchanging the code, and the matching PKCE verifier is supplied to the token endpoint. Providers must support PKCE S256. OAuth accounts are linked by the provider's stable subject identifier only; matching email addresses never establishes or links identities.
 
-A pending OAuth credential can only be confirmed by the already authenticated owner completing the matching provider login; anonymous sign-in through an unverified provider association is rejected.
+### Explicit OAuth account linking
+
+**OAuth login and account linking are separate operations.** A normal `OAuthController::get($provider, $query)` authorization/callback can authenticate an already verified external identity or register a **new, separate account** for an anonymous user. It never attaches a new provider credential to an existing authenticated account, even when email addresses match. A signed-in user attempting to sign in through an unassociated provider receives HTTP 409 and must explicitly link the account first. Existing unverified OAuth identities cannot sign in anonymously or be silently confirmed.
+
+To link a provider, the application must expose `OAuthController::postLink($provider)` on an authenticated **POST** route (for example, `POST /auth/oauth/link/google` using the application's router). The request requires `Content-Type: application/json` and a valid session-bound `X-CSRF-Token` from `Auth::management_csrf_token()` (also available in the logged-in `AuthController::index()` response as `_csrf`). Do not allow GET links or unprotected forms to initiate linking.
+
+The action returns JSON containing an `authorization_url`. **The frontend must navigate to that URL** rather than relying on an AJAX redirect:
+
+```js
+const response = await fetch('/auth/oauth/link/google', {
+  method: 'POST',
+  credentials: 'same-origin',
+  headers: {
+    'Content-Type': 'application/json',
+    'X-CSRF-Token': csrfToken,
+  },
+  body: '{}',
+});
+if (!response.ok) throw new Error('Could not start account linking');
+const { authorization_url } = await response.json();
+window.location.assign(authorization_url);
+```
+
+The provider's usual OAuth callback still uses `get()`. The session flow records an explicit `link` intent, the initiating user ID, provider, PKCE verifier, expiring one-time state and login session. Only a valid callback for the same active user may create/verify that user's provider credential. Identities already associated with a different user are rejected with HTTP 409; unverified mappings owned by the current user require this explicit flow to be confirmed. State is consumed even when linking fails.
+
+Applications should make the action visible only after the user chooses **Link account**, and may require additional recent-authentication or step-up checks as local policy dictates. All existing authorization, CSRF, and provider-account security checks continue to apply.
 
 ## User-management API
 
