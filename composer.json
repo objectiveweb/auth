@@ -8,11 +8,11 @@
     }
   ],
   "support": {
-    "issues" : "https://github.com/objetiveweb/auth/issues"
+    "issues" : "https://github.com/objectiveweb/auth/issues"
   },
   "require": {
     "php": ">=8.2.0",
-    "objectiveweb/db": "dev-devel"
+    "objectiveweb/db": "^0.8.0"
   },
   "require-dev": {
     "phpunit/phpunit": "10.*",
