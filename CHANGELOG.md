@@ -45,6 +45,7 @@ All notable changes to `objectiveweb/auth` are documented here. This project fol
 - Recheck password-reset token expiry after its conditional database update and roll back if it expires while waiting for a row lock, preventing expired tokens from changing passwords.
 - Serialize DBAuth credential deletion per user inside a transaction so simultaneous requests cannot remove every credential from an account.
 - Prevent OAuth login CSRF, state replay, cross-provider state confusion, unconsented linking, email-based account takeover and cross-account credential reassignment.
+- Create OAuth-only accounts atomically with their verified external credential; a failed credential insert rolls back the new user. Custom provider implementations can opt in through `Auth::register_verified_credential()`, which fails closed by default.
 - Restrict logout redirects to safe same-origin absolute paths and reject attacker-controlled OAuth callback URLs.
 - Enforce management CSRF checks; check and serialize administrator removal, demotion and suspension inside DBAuth's existing update/delete transactions so concurrent operations cannot remove the final active admin (including direct DBAuth calls and lifecycle-field updates). Routine profile writes skip the lock; controllers retain self-protection and validation. Reject unknown DELETE subresources with 404 instead of accidentally deleting the user.
 - Require session-bound CSRF for authenticated and role-restricted registration using a request header or HTML form field, without changing anonymous registration.

@@ -419,6 +419,18 @@ abstract class Auth
     abstract public function register($uid, $password = null, $data = array(), bool $invite = false);
 
     /**
+     * Trusted integration hook for identities already proven by an OAuth
+     * provider. Implementations must create the user AND verified credential
+     * atomically; never allow a public caller to assert verification.
+     *
+     * Providers that cannot guarantee atomicity must fail closed.
+     */
+    public function register_verified_credential(array $data): array
+    {
+        throw new \LogicException('Atomic verified-credential registration is not supported by this provider');
+    }
+
+    /**
      *
      * Update a user's password
      *

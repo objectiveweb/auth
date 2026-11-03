@@ -115,6 +115,16 @@ class BasicAuth extends \Objectiveweb\Auth
 
     public function register($uid, $password = null, $data = array(), bool $invite = false)
     {
+        return $this->registerInternal($uid, $password, $data, $invite, false);
+    }
+
+    public function register_verified_credential(array $data): array
+    {
+        return $this->registerInternal($data, null, [], false, true);
+    }
+
+    private function registerInternal($uid, $password, array $data, bool $invite, bool $verified): array
+    {
         if (is_array($uid)) {
             $data = array_merge($uid, $data);
             $uid = $data['uid'] ?? null;
@@ -135,6 +145,9 @@ class BasicAuth extends \Objectiveweb\Auth
         $provider = $data['provider'] ?? 'local';
         $profile = $data['profile'] ?? null;
         unset($data['provider'], $data['profile']);
+        if ($verified && ($provider === 'local' || $password !== null)) {
+            throw new UserException('Verified registration requires an external passwordless identity', 400);
+        }
 
         if ($this->get_credential($provider, $uid)) {
             throw new UserException("User `$uid` already exists", 409);
@@ -169,6 +182,9 @@ class BasicAuth extends \Objectiveweb\Auth
         try {
             $this->update_credential($userId, $provider, $uid, $profile);
             $this->credentials[$provider][$uid]['last_login'] = null;
+            if ($verified) {
+                $this->credentials[$provider][$uid]['verified_at'] = date('Y-m-d H:i:s');
+            }
             if ($invite) {
                 $this->invite($userId);
             }
